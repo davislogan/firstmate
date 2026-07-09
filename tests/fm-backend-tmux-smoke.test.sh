@@ -60,6 +60,81 @@ if fm_backend_tmux_create_task "$SESSION" "$WINDOW" "$HOME" 2>/dev/null; then
 fi
 pass "real tmux: fm_backend_tmux_create_task creates a window and refuses a duplicate"
 
+# --- window-index collision (fm-spawn-window-index-y1) ----------------------
+# Every task window is created detached (-d), so the session's active window
+# never moves across spawns. tmux's implicit (no explicit index) placement is
+# relative to that active window, so back-to-back or concurrent spawns into
+# the same session can repeatedly resolve the same slot and fail with
+# "create window failed: index N in use" (2026-07-08/09 incident;
+# data/learnings.md). fm_backend_tmux_create_task now claims an explicit free
+# index instead of relying on that implicit placement.
+
+COLSES="smoke-collision"
+tmux new-session -d -s "$COLSES" -x 200 -y 50 \
+  || fail "real tmux: collision-test new-session failed"
+active_before=$(tmux list-windows -t "$COLSES" -F '#{window_active} #{window_index}' | grep '^1 ' | awk '{print $2}')
+
+# Several back-to-back spawns into the same still-active session must all
+# succeed and land on distinct window indices.
+for n in 1 2 3 4 5; do
+  fm_backend_tmux_create_task "$COLSES" "fm-collide-$n" "$HOME" \
+    || fail "back-to-back spawn $n failed (window-index collision regressed)"
+done
+distinct_indexes=$(tmux list-windows -t "$COLSES" -F '#{window_index}' | sort -u | wc -l)
+total_windows=$(tmux list-windows -t "$COLSES" -F '#{window_index}' | wc -l)
+[ "$distinct_indexes" -eq "$total_windows" ] \
+  || fail "back-to-back spawns produced duplicate window indexes"
+active_after=$(tmux list-windows -t "$COLSES" -F '#{window_active} #{window_index}' | grep '^1 ' | awk '{print $2}')
+[ "$active_after" -eq "$active_before" ] \
+  || fail "collision-test session's active window unexpectedly moved (test assumption broken)"
+pass "real tmux: 5 back-to-back detached spawns into the same active session all succeed with distinct indexes"
+
+tmux kill-session -t "$COLSES" >/dev/null 2>&1 || true
+
+# Force the exact collision shape on a fresh session: pre-occupy the slot
+# that naive active-window+1 placement would target, then confirm
+# create_task still succeeds by claiming a genuinely free index instead.
+COLSES2="smoke-forced-collision"
+tmux new-session -d -s "$COLSES2" -x 200 -y 50 \
+  || fail "real tmux: forced-collision new-session failed"
+active_index=$(tmux list-windows -t "$COLSES2" -F '#{window_active} #{window_index}' | grep '^1 ' | awk '{print $2}')
+next_naive=$((active_index + 1))
+tmux new-window -d -t "$COLSES2:$next_naive" -n fm-pre-existing -c "$HOME" \
+  || fail "could not pre-occupy the naive next-index slot to set up the forced-collision test"
+fm_backend_tmux_create_task "$COLSES2" "fm-forced-collision" "$HOME" \
+  || fail "fm_backend_tmux_create_task failed when the naive next index was already taken"
+tmux list-windows -t "$COLSES2" -F '#{window_name}' | grep -qx "fm-forced-collision" \
+  || fail "fm-forced-collision window is not visible after the forced-collision spawn"
+pass "real tmux: fm_backend_tmux_create_task succeeds when the naive active-window+1 index is already occupied"
+
+tmux kill-session -t "$COLSES2" >/dev/null 2>&1 || true
+
+# Heavy simultaneous contention: many concurrent spawns into one session all
+# list-then-create at nearly the same instant, so each retry round has one
+# winner and the losers recompute against a moving max index. The bounded
+# retry (20 attempts, with a randomized jitter sleep before each retry so
+# contenders desynchronize instead of chasing the same index in lockstep)
+# must let every contender converge on its own free slot.
+COLSES3="smoke-contention"
+tmux new-session -d -s "$COLSES3" -x 200 -y 50 \
+  || fail "real tmux: contention-test new-session failed"
+pids=()
+for n in 1 2 3 4 5 6 7 8 9 10; do
+  ( fm_backend_tmux_create_task "$COLSES3" "fm-race-$n" "$HOME" 2>/dev/null ) &
+  pids+=($!)
+done
+race_fails=0
+for p in "${pids[@]}"; do wait "$p" || race_fails=$((race_fails + 1)); done
+[ "$race_fails" -eq 0 ] \
+  || fail "$race_fails of 10 simultaneous spawns failed (retry bound exhausted under contention)"
+distinct_indexes=$(tmux list-windows -t "$COLSES3" -F '#{window_index}' | sort -u | wc -l)
+total_windows=$(tmux list-windows -t "$COLSES3" -F '#{window_index}' | wc -l)
+[ "$distinct_indexes" -eq "$total_windows" ] \
+  || fail "simultaneous spawns produced duplicate window indexes"
+pass "real tmux: 10 simultaneous spawns into one session all converge on distinct free indexes"
+
+tmux kill-session -t "$COLSES3" >/dev/null 2>&1 || true
+
 # --- send text + Enter -------------------------------------------------------
 
 tmux send-keys -t "$TARGET" "cd /tmp && PS1='smoke\$ '" Enter

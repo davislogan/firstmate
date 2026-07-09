@@ -95,18 +95,25 @@ fm_backend_tmux_next_free_index() {  # <session>
 # spawns into the same session repeatedly resolve the same implicit slot and
 # can fail with "create window failed: index N in use" (recurring 2026-07-08
 # and 2026-07-09; see data/learnings.md). An explicit index sidesteps that
-# relative computation entirely. The bounded retry closes the residual
-# query-then-create race between two spawns that list the session's windows
-# at nearly the same instant and would otherwise compute the same "next
-# free" index; each retry re-lists the session so it always targets a
-# genuinely current free slot.
+# relative computation entirely. The bounded retry (20 attempts) closes the
+# residual query-then-create race between concurrent spawns that list the
+# session's windows at nearly the same instant and would otherwise compute
+# the same "next free" index; each retry re-lists the session so it always
+# targets a genuinely current free slot. Every retry (never the first
+# attempt, so an uncontended create returns immediately with no added
+# latency) is preceded by a small randomized jitter sleep so contending
+# spawns desynchronize their next list-windows read instead of recomputing
+# the identical index in lockstep round after round.
 fm_backend_tmux_create_task() {  # <session> <window-name> <proj-abs>
   local ses=$1 wname=$2 proj_abs=$3 idx attempt err
   if tmux list-windows -t "$ses" -F '#{window_name}' | grep -qx "$wname"; then
     echo "error: window $ses:$wname already exists" >&2
     return 1
   fi
-  for attempt in 1 2 3 4 5; do
+  for attempt in $(seq 1 20); do
+    if [ "$attempt" -gt 1 ]; then
+      sleep "0.0$((RANDOM % 10))"
+    fi
     idx=$(fm_backend_tmux_next_free_index "$ses")
     if err=$(tmux new-window -d -t "$ses:$idx" -n "$wname" -c "$proj_abs" 2>&1); then
       return 0

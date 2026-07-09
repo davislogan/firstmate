@@ -109,6 +109,32 @@ pass "real tmux: fm_backend_tmux_create_task succeeds when the naive active-wind
 
 tmux kill-session -t "$COLSES2" >/dev/null 2>&1 || true
 
+# Heavy simultaneous contention: many concurrent spawns into one session all
+# list-then-create at nearly the same instant, so each retry round has one
+# winner and the losers recompute against a moving max index. The bounded
+# retry (20 attempts, with a randomized jitter sleep before each retry so
+# contenders desynchronize instead of chasing the same index in lockstep)
+# must let every contender converge on its own free slot.
+COLSES3="smoke-contention"
+tmux new-session -d -s "$COLSES3" -x 200 -y 50 \
+  || fail "real tmux: contention-test new-session failed"
+pids=()
+for n in 1 2 3 4 5 6 7 8 9 10; do
+  ( fm_backend_tmux_create_task "$COLSES3" "fm-race-$n" "$HOME" 2>/dev/null ) &
+  pids+=($!)
+done
+race_fails=0
+for p in "${pids[@]}"; do wait "$p" || race_fails=$((race_fails + 1)); done
+[ "$race_fails" -eq 0 ] \
+  || fail "$race_fails of 10 simultaneous spawns failed (retry bound exhausted under contention)"
+distinct_indexes=$(tmux list-windows -t "$COLSES3" -F '#{window_index}' | sort -u | wc -l)
+total_windows=$(tmux list-windows -t "$COLSES3" -F '#{window_index}' | wc -l)
+[ "$distinct_indexes" -eq "$total_windows" ] \
+  || fail "simultaneous spawns produced duplicate window indexes"
+pass "real tmux: 10 simultaneous spawns into one session all converge on distinct free indexes"
+
+tmux kill-session -t "$COLSES3" >/dev/null 2>&1 || true
+
 # --- send text + Enter -------------------------------------------------------
 
 tmux send-keys -t "$TARGET" "cd /tmp && PS1='smoke\$ '" Enter

@@ -72,6 +72,7 @@ pass "real tmux: fm_backend_tmux_create_task creates a window and refuses a dupl
 COLSES="smoke-collision"
 tmux new-session -d -s "$COLSES" -x 200 -y 50 \
   || fail "real tmux: collision-test new-session failed"
+active_before=$(tmux list-windows -t "$COLSES" -F '#{window_active} #{window_index}' | grep '^1 ' | awk '{print $2}')
 
 # Several back-to-back spawns into the same still-active session must all
 # succeed and land on distinct window indices.
@@ -84,7 +85,7 @@ total_windows=$(tmux list-windows -t "$COLSES" -F '#{window_index}' | wc -l)
 [ "$distinct_indexes" -eq "$total_windows" ] \
   || fail "back-to-back spawns produced duplicate window indexes"
 active_after=$(tmux list-windows -t "$COLSES" -F '#{window_active} #{window_index}' | grep '^1 ' | awk '{print $2}')
-[ "$active_after" -eq 1 ] \
+[ "$active_after" -eq "$active_before" ] \
   || fail "collision-test session's active window unexpectedly moved (test assumption broken)"
 pass "real tmux: 5 back-to-back detached spawns into the same active session all succeed with distinct indexes"
 

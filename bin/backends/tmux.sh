@@ -101,18 +101,18 @@ fm_backend_tmux_next_free_index() {  # <session>
 # free" index; each retry re-lists the session so it always targets a
 # genuinely current free slot.
 fm_backend_tmux_create_task() {  # <session> <window-name> <proj-abs>
-  local ses=$1 wname=$2 proj_abs=$3 idx attempt
+  local ses=$1 wname=$2 proj_abs=$3 idx attempt err
   if tmux list-windows -t "$ses" -F '#{window_name}' | grep -qx "$wname"; then
     echo "error: window $ses:$wname already exists" >&2
     return 1
   fi
   for attempt in 1 2 3 4 5; do
     idx=$(fm_backend_tmux_next_free_index "$ses")
-    if tmux new-window -d -t "$ses:$idx" -n "$wname" -c "$proj_abs"; then
+    if err=$(tmux new-window -d -t "$ses:$idx" -n "$wname" -c "$proj_abs" 2>&1); then
       return 0
     fi
   done
-  echo "error: window $ses:$wname: failed to claim a free index after $attempt attempts" >&2
+  echo "error: window $ses:$wname: failed to claim a free index after $attempt attempts: $err" >&2
   return 1
 }
 

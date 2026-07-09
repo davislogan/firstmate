@@ -67,17 +67,53 @@ fm_backend_tmux_container_ensure() {
   fi
 }
 
+# fm_backend_tmux_next_free_index: an index one past the highest window index
+# currently in <session> (0 if the session has no windows yet, which cannot
+# happen for a real tmux session but keeps this safe to call defensively).
+# Picking strictly above the current max is collision-proof against gaps left
+# by killed windows (renumber-windows is off) regardless of base-index.
+fm_backend_tmux_next_free_index() {  # <session>
+  local ses=$1 max
+  max=$(tmux list-windows -t "$ses" -F '#{window_index}' 2>/dev/null | sort -n | tail -1)
+  if [ -z "$max" ]; then
+    printf '0'
+  else
+    printf '%d' "$((max + 1))"
+  fi
+}
+
 # fm_backend_tmux_create_task: create the task's window in <proj-abs>,
 # refusing an existing <window-name> in <session>. Mirrors fm-spawn.sh's
 # duplicate-check-then-new-window sequence, including the exact error text
 # (session:window, matching how fm-spawn.sh composed its own $T).
+#
+# Places the new window at an EXPLICIT free index
+# (fm_backend_tmux_next_free_index) instead of leaving `tmux new-window` to
+# pick one implicitly. Implicit placement inserts relative to the session's
+# ACTIVE window, and every task window is created detached (-d), so a
+# detached spawn never moves that active window: back-to-back or concurrent
+# spawns into the same session repeatedly resolve the same implicit slot and
+# can fail with "create window failed: index N in use" (recurring 2026-07-08
+# and 2026-07-09; see data/learnings.md). An explicit index sidesteps that
+# relative computation entirely. The bounded retry closes the residual
+# query-then-create race between two spawns that list the session's windows
+# at nearly the same instant and would otherwise compute the same "next
+# free" index; each retry re-lists the session so it always targets a
+# genuinely current free slot.
 fm_backend_tmux_create_task() {  # <session> <window-name> <proj-abs>
-  local ses=$1 wname=$2 proj_abs=$3
+  local ses=$1 wname=$2 proj_abs=$3 idx attempt
   if tmux list-windows -t "$ses" -F '#{window_name}' | grep -qx "$wname"; then
     echo "error: window $ses:$wname already exists" >&2
     return 1
   fi
-  tmux new-window -d -t "$ses" -n "$wname" -c "$proj_abs"
+  for attempt in 1 2 3 4 5; do
+    idx=$(fm_backend_tmux_next_free_index "$ses")
+    if tmux new-window -d -t "$ses:$idx" -n "$wname" -c "$proj_abs"; then
+      return 0
+    fi
+  done
+  echo "error: window $ses:$wname: failed to claim a free index after $attempt attempts" >&2
+  return 1
 }
 
 # fm_backend_tmux_current_path: the live pane's current working directory, or

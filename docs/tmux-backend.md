@@ -113,6 +113,21 @@ The classifier deliberately reports `unknown` for `node`/`python`/`python3` rath
 Practical effect: a dead `pi` secondmate is not auto-healed by the liveness sweep today; it is reported as `skipped: liveness probe inconclusive` instead, which still surfaces it for a human to act on.
 Resolving this would need either a `pi`-specific env marker inspectable from outside the process (mirroring `PI_CODING_AGENT=1`, which `bin/fm-harness.sh` already uses for self-detection but which is not readable from a different process without deeper introspection) or accepting the argument-inspection fragility - not attempted here.
 
+## Window-index collision fix (fm-spawn-window-index-y1)
+
+Every task window is created detached (`-d`), so the session's active window never moves across a spawn.
+`tmux new-window` with no explicit target index places the new window relative to that active window, so back-to-back or concurrent spawns into the same session can repeatedly resolve the same slot.
+Production hit this twice (2026-07-08 and 2026-07-09) as `create window failed: index N in use`; the operator workaround was `env -u TMUX bin/fm-spawn.sh ...`, which routed spawns to a separate dedicated `firstmate` session instead of fixing the collision.
+
+`fm_backend_tmux_create_task` (`bin/backends/tmux.sh`) now computes an explicit free index (`fm_backend_tmux_next_free_index`: one past the session's current highest window index) and targets it directly (`tmux new-window -d -t "<session>:<index>"`), with a bounded retry against a freshly recomputed index if that exact slot loses a race to a concurrent create.
+This removes the dependence on tmux's implicit active-window-relative placement entirely, so it applies uniformly to crewmate and secondmate spawns alike (both go through the same call site).
+
+Verified empirically with real tmux 3.4 (Ubuntu, 2026-07-09):
+
+- A forced-collision setup - pre-occupying the exact slot that naive active-window+1 placement would target, then creating a new task window - succeeds and lands on the next genuinely free index.
+- 5 back-to-back detached spawns into the same still-active session all succeed with 5 distinct indices.
+- Note: this tmux version's own implicit (no explicit index) placement was also not observed to collide under the same forced-collision setup, nor under up to 20-way concurrent `new-window` calls (30 iterations, 0 failures), so the exact race behind the production incident could not be reproduced live in this environment. The fix is still correct and strictly more deterministic: it eliminates the one documented failure mode (implicit relative placement) instead of relying on a given tmux version's internal search behavior to keep masking it.
+
 ## Limitations
 
 None specific to tmux for the reference path itself - it is the fully verified reference backend, while Orca and cmux are the backends without secondmate support.

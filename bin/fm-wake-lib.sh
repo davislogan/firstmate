@@ -24,13 +24,30 @@ fm_pid_alive() {
 }
 
 fm_pid_identity() {
-  local pid=$1 out
+  local pid=$1 out start cmd
   case "$pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
-  # Pin LC_ALL=C so lstart's date format is locale-invariant: the identity is
-  # written under one locale but re-read under the machine's ambient locale, which
-  # would otherwise mismatch on a non-C locale (e.g. ko_KR) and reject a live watcher.
+  # Prefer the kernel's tick-exact start time over ps's lstart: lstart is
+  # re-derived on every read as boot-time + start-ticks, and on kernels whose
+  # /proc/stat btime jitters between reads (observed on WSL2) the same live pid's
+  # lstart can flip by a second, spuriously failing the identity match for a
+  # genuinely live watcher. Field 22 of /proc/<pid>/stat (start ticks since boot)
+  # is a constant integer for the process's lifetime; the comm field may contain
+  # spaces or parens, so strip through the LAST ')' before counting fields.
+  if [ -r "/proc/$pid/stat" ]; then
+    start=$(sed 's/.*)//' "/proc/$pid/stat" 2>/dev/null | awk '{print $20}')
+    cmd=$(LC_ALL=C ps -p "$pid" -o command= 2>/dev/null)
+    if [ -n "$start" ] && [ -n "$cmd" ]; then
+      printf '%s %s\n' "$start" "$cmd" | sed 's/^[[:space:]]*//'
+      return 0
+    fi
+  fi
+  # No readable /proc (e.g. macOS): fall back to ps's lstart, whose BSD source is
+  # a fixed start timeval rather than a btime re-derivation. Pin LC_ALL=C so
+  # lstart's date format is locale-invariant: the identity is written under one
+  # locale but re-read under the machine's ambient locale, which would otherwise
+  # mismatch on a non-C locale (e.g. ko_KR) and reject a live watcher.
   out=$(LC_ALL=C ps -p "$pid" -o lstart= -o command= 2>/dev/null) || return 1
   [ -n "$out" ] || return 1
   printf '%s\n' "$out" | sed 's/^[[:space:]]*//'

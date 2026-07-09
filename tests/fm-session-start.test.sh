@@ -44,7 +44,9 @@ base_path_sans_node() {
   for entry in $BASE_PATH; do
     [ -d "$entry" ] || continue
     for path in "$entry"/*; do
-      [ -x "$path" ] && [ -f "$path" ] || continue
+      if [ ! -x "$path" ] || [ ! -f "$path" ]; then
+        continue
+      fi
       base=$(basename "$path")
       [ "$base" = node ] && continue
       [ -e "$dir/$base" ] || ln -s "$path" "$dir/$base"
@@ -213,7 +215,7 @@ run_session_start() {  # <home> <root> <path>
   # through to the fakebin ps ancestry walk this suite controls, instead of
   # picking up whatever agent actually runs this test (e.g. CLAUDECODE=1 when
   # the suite itself is invoked from inside a live Claude Code session).
-  CLAUDECODE= PI_CODING_AGENT= GROK_AGENT= \
+  CLAUDECODE='' PI_CODING_AGENT='' GROK_AGENT='' \
     FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" "$SESSION_START"
 }
 

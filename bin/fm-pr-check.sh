@@ -3,6 +3,17 @@
 # state/<id>.meta when available, then arms the watcher's merge poll by writing
 # state/<id>.check.sh, which prints one line iff the PR is merged (the watcher's
 # check contract: output = wake firstmate, silence = keep sleeping).
+#
+# On detecting its own merge, the generated check.sh also calls
+# fm-pr-conflict-sweep.sh, which sweeps every other in-flight PR-based task
+# for the same project (other state/*.meta with a pr= line and a matching
+# project=) and reports any sibling PR that has newly gone from mergeable to
+# conflicted with main - the moment a merge lands is exactly when a sibling
+# still-open PR is most likely to develop a real conflict, and this closes the
+# gap where that would otherwise only be caught reactively when a captain hits
+# it live on GitHub. fm-pr-conflict-sweep.sh and fm-pr-mergeable.sh own that
+# logic; this script only arms the one line in the generated check.sh that
+# calls out to it, so the sweep logic is never duplicated inline per task.
 # Usage: fm-pr-check.sh <task-id> <pr-url>
 set -eu
 
@@ -35,6 +46,9 @@ fi
 
 cat > "$STATE/$ID.check.sh" <<EOF
 state=\$(gh pr view "$URL" --json state -q .state 2>/dev/null)
-[ "\$state" = "MERGED" ] && echo "merged"
+if [ "\$state" = "MERGED" ]; then
+  echo "merged"
+  "$FM_ROOT/bin/fm-pr-conflict-sweep.sh" "$ID" "$STATE"
+fi
 EOF
 echo "armed: state/$ID.check.sh polls $URL"

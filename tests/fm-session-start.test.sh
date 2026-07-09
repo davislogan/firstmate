@@ -30,6 +30,31 @@ BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 TMP_ROOT=$(fm_test_tmproot fm-session-start-tests)
 fm_git_identity fmtest fmtest@example.invalid
 
+# base_path_sans_node: BASE_PATH's real utilities (git, jq, ps, ...) reachable
+# through one filtered directory that omits "node", so a test that removes
+# node from its fakebin can reliably simulate node being MISSING even on a
+# host where a system-wide node binary also lives in a BASE_PATH directory
+# (e.g. /usr/bin) alongside those other utilities.
+base_path_sans_node() {
+  local dir entry base path
+  dir="$TMP_ROOT/basepath-sans-node"
+  [ -d "$dir" ] && { printf '%s\n' "$dir"; return 0; }
+  mkdir -p "$dir"
+  local IFS=:
+  for entry in $BASE_PATH; do
+    [ -d "$entry" ] || continue
+    for path in "$entry"/*; do
+      if [ ! -x "$path" ] || [ ! -f "$path" ]; then
+        continue
+      fi
+      base=$(basename "$path")
+      [ "$base" = node ] && continue
+      [ -e "$dir/$base" ] || ln -s "$path" "$dir/$base"
+    done
+  done
+  printf '%s\n' "$dir"
+}
+
 # --- world builders ----------------------------------------------------------
 
 # new_world <name>: a real, throwaway git repo on `main` (so the worktree-tangle
@@ -186,7 +211,12 @@ SH
 
 run_session_start() {  # <home> <root> <path>
   local home=$1 root=$2 path=$3
-  FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" "$SESSION_START"
+  # Clear real harness env markers so fm-harness.sh's detect_own() falls
+  # through to the fakebin ps ancestry walk this suite controls, instead of
+  # picking up whatever agent actually runs this test (e.g. CLAUDECODE=1 when
+  # the suite itself is invoked from inside a live Claude Code session).
+  CLAUDECODE='' PI_CODING_AGENT='' GROK_AGENT='' \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" "$SESSION_START"
 }
 
 hash_file_for_test() {
@@ -339,7 +369,7 @@ EOF
 
   printf 'window=fm-sess:w1\nkind=ship\n' > "$home/state/task-a.meta"
 
-  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  out=$(run_session_start "$home" "$root" "$fakebin:$(base_path_sans_node)")
 
   lock_line=$(printf '%s\n' "$out" | grep -n '^LOCK$' | head -1 | cut -d: -f1)
   boot_line=$(printf '%s\n' "$out" | grep -n '^BOOTSTRAP$' | head -1 | cut -d: -f1)
@@ -482,7 +512,7 @@ EOF
 
   append_wake "$home/state" signal task-z "needs-decision: pick a library"
 
-  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  out=$(run_session_start "$home" "$root" "$fakebin:$(base_path_sans_node)")
 
   # fm-lock.sh's own exact success text.
   assert_contains "$out" "lock acquired: harness pid" "fm-lock.sh's real output did not appear (composition, not reimplementation)"

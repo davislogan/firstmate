@@ -438,7 +438,10 @@ test_watch_restart_reports_healthy_peer_without_attaching() {
   touch "$state/.last-watcher-beat"
   PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_ATTACH_POLL=0.1 "$WATCH_ARM" --restart > "$out" &
   armpid=$!
-  wait_for_exit "$armpid" 80
+  # Restart mode first sends TERM to the TERM-resistant peer and waits up to 5s
+  # (50 * 0.1s, hardcoded in fm-watch-arm.sh) for it to die before proceeding, so
+  # this budget must clear that deterministic floor with real headroom under load.
+  wait_for_exit "$armpid" 200
   status=$?
   [ "$status" -eq 0 ] || fail "restart did not exit zero after reporting healthy peer (status $status): $(cat "$out")"
   grep -qF "watcher: healthy pid=$peer" "$out" || fail "restart did not report the healthy peer: $(cat "$out")"

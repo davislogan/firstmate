@@ -25,7 +25,15 @@
 #                          also carries a "demand-deep-inspection" marker so the
 #                          wake payload itself, not just repetition, forces a
 #                          closer look instead of another routine supervision
-#                          resume. Unless afk is active.
+#                          resume. A NOT-provably-working TERMINAL stale (a crew
+#                          parked at a needs-decision/blocked/done human gate)
+#                          fires once per distinct captain-relevant status line;
+#                          once .hb-surfaced-<task> records that line as delivered
+#                          (by this path or by an earlier signal wake), any further
+#                          stale poll for the SAME unchanged line is absorbed even
+#                          if the raw pane hash drifts (a blinking cursor, a
+#                          spinner) - only a genuinely new captain-relevant line
+#                          re-arms it. Unless afk is active.
 #   check: <script>: <out> per-task check output, always actionable
 #   heartbeat              fleet-scan backstop found an unsurfaced captain-relevant
 #                          status, unless afk is active
@@ -530,11 +538,29 @@ EOF
               date +%s > "$ssf"
               triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
             else
-              fm_wake_append stale "$w" "stale: $w" || exit 1
-              printf '%s' "$h" > "$sf"
-              rm -f "$ssf"
-              mark_surfaced "$STATE/$(window_to_task "$w" "$STATE").status"
-              wake "stale: $w"
+              # Parked-stale churn fix: a crew genuinely parked at a human gate
+              # (needs-decision/blocked/done) is NOT provably working, so this
+              # sub-branch decides fire-vs-absorb - but a raw pane-hash change
+              # (a blinking cursor, a spinner glyph) makes a truly unchanged
+              # gate look like a "new" hash every poll, which would otherwise
+              # re-deliver the SAME already-escalated line forever. Gate on
+              # .hb-surfaced-<task> (the same "already told firstmate" marker
+              # the heartbeat backstop uses) instead of the hash: only a
+              # genuinely new captain-relevant line re-fires.
+              gate_task=$(window_to_task "$w" "$STATE")
+              gate_status_file="$STATE/$gate_task.status"
+              gate_line=$(last_status_line "$gate_status_file")
+              if [ -n "$gate_line" ] && [ "$(cat "$(_hb_surfaced_path "$gate_task")" 2>/dev/null || true)" = "$gate_line" ]; then
+                printf '%s' "$h" > "$sf"
+                rm -f "$ssf"
+                triage_log "absorbed stale (already escalated, parked unchanged): $w"
+              else
+                fm_wake_append stale "$w" "stale: $w" || exit 1
+                printf '%s' "$h" > "$sf"
+                rm -f "$ssf"
+                mark_surfaced "$gate_status_file"
+                wake "stale: $w"
+              fi
             fi
           elif [ -e "$ssf" ]; then
             # This exact hash was already overridden as provably-working (a

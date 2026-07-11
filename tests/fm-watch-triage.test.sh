@@ -318,6 +318,81 @@ test_terminal_stale_surfaced() {
   pass "a stale pane sitting on a terminal status is surfaced (queue + exit)"
 }
 
+# --- parked-stale churn fix: an already-escalated, unchanged human-gate stale ---
+# is absorbed even when the raw pane hash drifts (a blinking cursor, a spinner) -
+# only a genuinely new captain-relevant line re-arms it. Regression coverage for
+# the parked-stale over-surfacing bug: a crew parked at a needs-decision/blocked/
+# done gate must not have the SAME already-delivered escalation re-fired every
+# poll just because .hash-<key> no longer matches the previous poll's bytes.
+
+test_terminal_stale_already_escalated_absorbed_on_hash_drift() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case terminal-stale-already-escalated); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-parked"
+  printf 'awaiting captain decision' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/parked.meta"
+  printf 'needs-decision: pick A or B\n' > "$state/parked.status"
+  sig=$(seen_sig "$state/parked.status"); printf '%s' "$sig" > "$state/.seen-parked_status"
+  # Already delivered to firstmate on an earlier poll (or via the signal path,
+  # which also calls mark_surfaced on the same status file).
+  printf 'needs-decision: pick A or B' > "$state/.hb-surfaced-parked"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "awaiting captain decision")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # A DIFFERENT recorded .stale-<key> hash simulates pane-hash churn (the raw
+  # bytes drifted) even though the crew's status has not materially changed.
+  printf 'stale-hash-from-a-prior-poll' > "$state/.stale-$key"
+  export FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at review'
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "watcher exited for an already-escalated, unchanged parked stale (should absorb): $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "already-escalated parked stale printed a wake reason: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "already-escalated parked stale enqueued a wake"
+  [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$pane_hash" ] || fail "stale suppressor was not advanced while absorbing"
+  reap "$pid"
+  unset FM_FAKE_CREW_STATE
+  pass "an already-escalated, unchanged parked stale is absorbed even when the raw pane hash drifts"
+}
+
+test_terminal_stale_resurfaces_on_new_captain_relevant_line() {
+  local dir state fakebin out drain_out capture_file window key pane_hash sig pid
+  dir=$(make_case terminal-stale-new-line); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  window="test:fm-parked-again"
+  printf 'blocked, waiting on captain' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/parkedagain.meta"
+  printf 'blocked: need repo access\n' > "$state/parkedagain.status"
+  sig=$(seen_sig "$state/parkedagain.status"); printf '%s' "$sig" > "$state/.seen-parkedagain_status"
+  # An OLDER captain-relevant line was the last one actually delivered - the
+  # crew's gate has since advanced (needs-decision -> blocked).
+  printf 'needs-decision: pick A or B' > "$state/.hb-surfaced-parkedagain"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "blocked, waiting on captain")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  export FM_FAKE_CREW_STATE='state: blocked · source: run-step · parked at review'
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "watcher did not surface a parked crew whose captain-relevant status materially changed"
+  grep -Fx "stale: $window" "$out" >/dev/null || fail "watcher did not print the re-surfaced stale wake"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the re-surfaced stale failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "re-surfaced stale was not queued"
+  [ "$(cat "$state/.hb-surfaced-parkedagain" 2>/dev/null || true)" = "blocked: need repo access" ] \
+    || fail "re-surfaced stale did not update the surfaced marker to the new line"
+  unset FM_FAKE_CREW_STATE
+  pass "a parked crew whose captain-relevant status materially changes re-surfaces immediately"
+}
+
 # --- stale pane, STALE terminal status overridden by an active run: absorbed ---
 # Regression for the 2026-07 herdr false-surface incidents: a crew's own status
 # log gets no new entry once firstmate hands it to a no-mistakes validation
@@ -752,6 +827,8 @@ test_turn_ended_not_working_surfaced
 test_working_note_not_working_surfaced
 test_actionable_signal_surfaced
 test_terminal_stale_surfaced
+test_terminal_stale_already_escalated_absorbed_on_hash_drift
+test_terminal_stale_resurfaces_on_new_captain_relevant_line
 test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold

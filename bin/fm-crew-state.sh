@@ -277,6 +277,44 @@ nm_gate_findings_count() {
   case "$rest" in ''|*[!0-9]*) return 0 ;; esac
   printf '%s' "$rest"
 }
+# 0 (ask-user present) if the CURRENT gate's findings[N]{...} table has at
+# least one row whose "action" column is literally ask-user; 1 (auto-fix
+# only, or no table) otherwise. Reads the action value from the header-
+# declared column position (not a hardcoded index, in case a gate's schema
+# ever reorders columns) over exactly the header's own N following rows, so a
+# free-text description mentioning "ask-user" in passing on an auto-fix row
+# can never flip the verdict - the fix_review mislabel this replaces, which
+# grepped the ENTIRE $RUN_OUT blob for the bare substring. Falls back to that
+# same (but now table-scoped, not whole-blob) substring check only when a
+# table exists but its "action" column cannot be resolved, so an unparseable
+# schema still errs toward "captain decision" rather than silently going quiet.
+nm_gate_has_ask_user() {
+  local header cols n idx=0 i=0 name row val rows col_arr
+  header=$(printf '%s\n' "$RUN_OUT" | grep -E '^[[:space:]]*findings\[[0-9]+\]\{[^}]*\}:[[:space:]]*$' | head -1)
+  [ -n "$header" ] || return 1
+  n=$(printf '%s' "$header" | grep -oE '\[[0-9]+\]' | head -1 | tr -d '[]')
+  cols=$(printf '%s' "$header" | sed -n 's/.*{\(.*\)}.*/\1/p')
+  case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$n" -gt 0 ] || return 1
+  IFS=',' read -ra col_arr <<< "$cols"
+  for name in "${col_arr[@]}"; do
+    i=$((i + 1))
+    [ "$(trim "$name")" = action ] && idx=$i
+  done
+  if [ "$idx" -eq 0 ]; then
+    printf '%s\n' "$RUN_OUT" | grep -A "$n" -F -- "$header" | grep -q 'ask-user'
+    return $?
+  fi
+  rows=$(printf '%s\n' "$RUN_OUT" | grep -A "$n" -F -- "$header" | tail -n "$n")
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    val=$(strip_quotes "$(printf '%s' "$row" | cut -d, -f"$idx")")
+    [ "$val" = "ask-user" ] && return 0
+  done <<EOF
+$rows
+EOF
+  return 1
+}
 log_reports_ci_ready() {
   [ "$LOG_VERB" = "done" ] || return 1
   case "$(log_note_of "$LOG_LINE")" in
@@ -476,7 +514,7 @@ if [ "$HAVE_RUN" = 1 ]; then
       RUN_DETAIL="parked at $gate"
       fcount=$(nm_gate_findings_count)
       [ -n "$fcount" ] && RUN_DETAIL="$RUN_DETAIL: $fcount finding(s)"
-      if printf '%s\n' "$RUN_OUT" | grep -q 'ask-user'; then
+      if nm_gate_has_ask_user; then
         RUN_DETAIL="$RUN_DETAIL (ask-user: captain decision)"
       fi
     else

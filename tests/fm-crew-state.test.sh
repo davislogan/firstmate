@@ -254,6 +254,47 @@ steps[3]{step,status,findings,duration_ms}:
 EOF
 }
 
+run_parked_all_autofix() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: running
+  head: "abc1234"
+  pr: ""
+  findings[2]{id,severity,file,line,action,description}:
+    r1,warning,a.go,,auto-fix,ignored error
+    r2,warning,c.go,,auto-fix,minor style issue - downgraded from ask-user after clarification
+gate:
+  step: review
+  status: fix_review
+steps[3]{step,status,findings,duration_ms}:
+  intent,completed,0,0
+  review,fix_review,2,0
+  test,pending,0,0
+EOF
+}
+
+run_parked_unresolvable_findings_schema() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: running
+  head: "abc1234"
+  pr: ""
+  findings[1]{id,severity,file,line,description}:
+    r1,error,b.go,,changes product behavior, needs ask-user
+gate:
+  step: review
+  status: fix_review
+steps[3]{step,status,findings,duration_ms}:
+  intent,completed,0,0
+  review,fix_review,1,0
+  test,pending,0,0
+EOF
+}
+
 run_passed() {  # <branch>
   cat <<EOF
 run:
@@ -428,6 +469,44 @@ test_gate_block_parked_not_superseded() {
   assert_contains "$out" "1 finding(s)" "gate block wait includes finding count"
   assert_not_contains "$out" "superseded" "gate block wait not flagged stale"
   pass "gate block parked run is not flagged superseded"
+}
+
+# Regression: a fix_review gate whose findings are ALL auto-fix (the crew
+# resolves them itself) must not be mislabeled as needing the captain. One
+# description even contains the literal substring "ask-user" in free text, to
+# pin the exact bug being fixed: the old code grepped the WHOLE axi status
+# blob for that substring instead of reading each finding's actual action.
+test_fix_review_all_autofix_not_mislabeled_ask_user() {
+  reset_fakes
+  local d; d=$(new_case fix-review-autofix)
+  make_repo_on_branch "$d/wt" fm/feat-autofix
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-autofix.meta" "window=fm:fm-feat-autofix" "worktree=$d/wt" "kind=ship"
+  printf 'needs-decision: review gate\n' > "$d/state/feat-autofix.status"
+  FM_FAKE_AXI_STATUS="$(run_parked_all_autofix fm/feat-autofix)"
+  local out; out=$(run_crew_state "$d" feat-autofix)
+  assert_contains "$out" "state: parked" "all-auto-fix fix_review gate -> parked"
+  assert_contains "$out" "parked at review" "all-auto-fix gate names the gate"
+  assert_contains "$out" "2 finding(s)" "all-auto-fix gate includes finding count"
+  assert_not_contains "$out" "ask-user" "all-auto-fix findings must not be mislabeled ask-user: captain decision"
+  pass "fix_review gate with only auto-fix findings is not mislabeled as needing the captain"
+}
+
+# A findings table whose schema has no resolvable "action" column can't be
+# classified precisely - the fallback must still err toward "captain
+# decision" (the pre-fix behavior) rather than silently going quiet.
+test_fix_review_unresolvable_schema_falls_back_to_ask_user() {
+  reset_fakes
+  local d; d=$(new_case fix-review-unresolvable)
+  make_repo_on_branch "$d/wt" fm/feat-unresolvable
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-unresolvable.meta" "window=fm:fm-feat-unresolvable" "worktree=$d/wt" "kind=ship"
+  printf 'needs-decision: review gate\n' > "$d/state/feat-unresolvable.status"
+  FM_FAKE_AXI_STATUS="$(run_parked_unresolvable_findings_schema fm/feat-unresolvable)"
+  local out; out=$(run_crew_state "$d" feat-unresolvable)
+  assert_contains "$out" "state: parked" "unresolvable-schema gate -> parked"
+  assert_contains "$out" "ask-user" "unresolvable schema falls back to the conservative ask-user default"
+  pass "a findings table with no action column falls back to the conservative ask-user default"
 }
 
 test_ci_ready_done_log_beats_monitoring_run() {
@@ -1054,6 +1133,8 @@ test_stale_blocked_superseded
 test_genuine_parked_not_superseded
 test_scalar_gate_parked_not_superseded
 test_gate_block_parked_not_superseded
+test_fix_review_all_autofix_not_mislabeled_ask_user
+test_fix_review_unresolvable_schema_falls_back_to_ask_user
 test_ci_ready_done_log_beats_monitoring_run
 test_ci_monitoring_checks_green_surfaces_done
 test_top_level_ci_checks_green_surfaces_done

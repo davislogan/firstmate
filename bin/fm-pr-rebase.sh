@@ -50,6 +50,8 @@ ORIGIN_URL=$(git -C "$PROJECT_DIR" remote get-url origin 2>/dev/null) \
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-pr-rebase.XXXXXX")
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 DEFAULT=$(git ls-remote --symref "$ORIGIN_URL" HEAD 2>/dev/null \
   | awk '$1 == "ref:" { sub(/^refs\/heads\//, "", $2); print $2; exit }')

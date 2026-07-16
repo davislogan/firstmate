@@ -26,6 +26,13 @@
 #     (m) once merged, running the generated check.sh directly reports both
 #         its own "merged" line and a newly conflicted sibling's line
 #     (n) the real watcher's *.check.sh sweep surfaces both as one wake
+#   auto-heal dispatch (FM_PR_AUTOHEAL_BIN stubbed; the heal itself is covered
+#   by tests/fm-pr-autoheal.test.sh and tests/fm-pr-rebase.test.sh):
+#     (o) a dirty sibling dispatches the detached heal exactly once per head
+#         OID (state/<id>.autoheal marker), re-reports without re-dispatching
+#         while the OID is unchanged, and re-heals on a new head OID
+#     (p) FM_PR_AUTOREBASE=0 keeps the sweep detect-only: today's exact line,
+#         no marker, no dispatch
 set -u
 
 # shellcheck source=tests/wake-helpers.sh
@@ -295,6 +302,98 @@ test_sweep_noop_without_own_meta() {
   pass "fm-pr-conflict-sweep.sh is a silent no-op when the task id has no meta file at all"
 }
 
+# --- auto-heal dispatch -------------------------------------------------------
+
+# add_autoheal_stub <fakebin>: a recording FM_PR_AUTOHEAL_BIN stand-in; each
+# invocation appends its args to $FM_TEST_AUTOHEAL_LOG.
+add_autoheal_stub() {
+  local fakebin=$1
+  cat > "$fakebin/autoheal-stub" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_TEST_AUTOHEAL_LOG"
+exit 0
+SH
+  chmod +x "$fakebin/autoheal-stub"
+}
+
+# wait_for_log_lines <file> <n>: the sweep detaches the heal, so give the
+# stub a moment to land its record before asserting.
+wait_for_log_lines() {
+  local file=$1 n=$2 tries=50
+  while [ "$tries" -gt 0 ]; do
+    if [ -f "$file" ] && [ "$(grep -c '' "$file")" -ge "$n" ]; then
+      return 0
+    fi
+    tries=$((tries - 1))
+    sleep 0.1
+  done
+  return 1
+}
+
+test_sweep_dispatches_autoheal_once_per_head_oid() {
+  local vals state project fakebin mdir log out
+  vals=$(make_sweep_case sweep-autoheal)
+  state=$(echo "$vals" | cut -d' ' -f1)
+  project=$(echo "$vals" | cut -d' ' -f2)
+  fakebin=$(echo "$vals" | cut -d' ' -f3)
+  add_autoheal_stub "$fakebin"
+  mdir="$TMP_ROOT/sweep-autoheal/mergeable"
+  mkdir -p "$mdir"
+  printf 'dirty\n' > "$mdir/71"
+  log="$TMP_ROOT/sweep-autoheal/heal.log"
+
+  fm_write_meta "$state/own.meta" "project=$project"
+  fm_write_meta "$state/sib.meta" "project=$project" "pr=https://github.com/example/repo/pull/71"
+
+  out=$(FM_TEST_PR_HEAD=abc123 FM_TEST_AUTOHEAL_LOG="$log" FM_TEST_MERGEABLE_DIR="$mdir" \
+    FM_PR_AUTOHEAL_BIN="$fakebin/autoheal-stub" PATH="$fakebin:$PATH" "$SWEEP" own "$state") \
+    || fail "sweep-autoheal: sweep failed on dispatch"
+  assert_contains "$out" 'auto-rebase dispatched' "sweep-autoheal: dispatch was not reported"
+  wait_for_log_lines "$log" 1 || fail "sweep-autoheal: detached heal was never invoked"
+  assert_grep "sib $state" "$log" "sweep-autoheal: heal did not get the sibling id and state dir"
+  [ "$(cat "$state/sib.autoheal")" = "abc123" ] || fail "sweep-autoheal: marker does not record the head OID"
+
+  out=$(FM_TEST_PR_HEAD=abc123 FM_TEST_AUTOHEAL_LOG="$log" FM_TEST_MERGEABLE_DIR="$mdir" \
+    FM_PR_AUTOHEAL_BIN="$fakebin/autoheal-stub" PATH="$fakebin:$PATH" "$SWEEP" own "$state") \
+    || fail "sweep-autoheal: sweep failed on re-fire"
+  assert_contains "$out" 'auto-rebase already attempted' "sweep-autoheal: re-fire did not point at the prior attempt"
+  sleep 0.3
+  [ "$(grep -c '' "$log")" -eq 1 ] || fail "sweep-autoheal: an unchanged head OID must not re-dispatch"
+
+  out=$(FM_TEST_PR_HEAD=def456 FM_TEST_AUTOHEAL_LOG="$log" FM_TEST_MERGEABLE_DIR="$mdir" \
+    FM_PR_AUTOHEAL_BIN="$fakebin/autoheal-stub" PATH="$fakebin:$PATH" "$SWEEP" own "$state") \
+    || fail "sweep-autoheal: sweep failed on new head OID"
+  assert_contains "$out" 'auto-rebase dispatched' "sweep-autoheal: a new head OID must dispatch again"
+  wait_for_log_lines "$log" 2 || fail "sweep-autoheal: new head OID never re-dispatched"
+  [ "$(cat "$state/sib.autoheal")" = "def456" ] || fail "sweep-autoheal: marker was not advanced to the new head OID"
+  pass "fm-pr-conflict-sweep.sh dispatches the detached heal exactly once per head OID"
+}
+
+test_sweep_optout_stays_detect_only() {
+  local vals state project fakebin mdir out
+  vals=$(make_sweep_case sweep-optout)
+  state=$(echo "$vals" | cut -d' ' -f1)
+  project=$(echo "$vals" | cut -d' ' -f2)
+  fakebin=$(echo "$vals" | cut -d' ' -f3)
+  add_autoheal_stub "$fakebin"
+  mdir="$TMP_ROOT/sweep-optout/mergeable"
+  mkdir -p "$mdir"
+  printf 'dirty\n' > "$mdir/71"
+
+  fm_write_meta "$state/own.meta" "project=$project"
+  fm_write_meta "$state/sib.meta" "project=$project" "pr=https://github.com/example/repo/pull/71"
+
+  out=$(FM_PR_AUTOREBASE=0 FM_TEST_PR_HEAD=abc123 FM_TEST_AUTOHEAL_LOG="$TMP_ROOT/sweep-optout/heal.log" \
+    FM_TEST_MERGEABLE_DIR="$mdir" FM_PR_AUTOHEAL_BIN="$fakebin/autoheal-stub" PATH="$fakebin:$PATH" \
+    "$SWEEP" own "$state") \
+    || fail "sweep-optout: sweep failed with auto-heal off"
+  [ "$out" = "sib PR https://github.com/example/repo/pull/71 now has a merge conflict with main" ] \
+    || fail "sweep-optout: opt-out must print exactly the detect-only line (got: $out)"
+  [ ! -e "$state/sib.autoheal" ] || fail "sweep-optout: opt-out must not write a marker"
+  [ ! -e "$TMP_ROOT/sweep-optout/heal.log" ] || fail "sweep-optout: opt-out must not dispatch"
+  pass "FM_PR_AUTOREBASE=0 keeps the sweep detect-only"
+}
+
 # --- fm-pr-check.sh + watcher wiring -----------------------------------------
 
 test_generated_check_silent_while_pr_open() {
@@ -393,6 +492,8 @@ test_sweep_ignores_different_project
 test_sweep_skips_non_pr_task
 test_sweep_skips_self_and_is_noop_alone
 test_sweep_noop_without_own_meta
+test_sweep_dispatches_autoheal_once_per_head_oid
+test_sweep_optout_stays_detect_only
 test_generated_check_silent_while_pr_open
 test_generated_check_reports_merge_and_sibling_conflict
 test_watcher_surfaces_merge_and_conflict_as_one_wake

@@ -28,6 +28,8 @@
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-pr-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-pr-lib.sh"
 ID=${1:?usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra gh-axi pr merge args>]}
 URL=${2:?usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra gh-axi pr merge args>]}
 shift 2
@@ -49,20 +51,6 @@ caller_has_merge_method() {
   return 1
 }
 
-parse_pr_url() {
-  local url=$1
-  if [[ "$url" =~ ^https://github\.com/([A-Za-z0-9][A-Za-z0-9-]{0,38})/([A-Za-z0-9._-]+)/pull/([0-9]+)/?$ ]]; then
-    PR_OWNER="${BASH_REMATCH[1]}"
-    PR_REPO="${BASH_REMATCH[2]}"
-    PR_NUMBER="${BASH_REMATCH[3]}"
-    if [[ "$PR_OWNER" != *- ]]; then
-      return 0
-    fi
-  fi
-  echo "error: PR URL must match https://github.com/<owner>/<repo>/pull/<number> (got: $url)" >&2
-  return 1
-}
-
 reject_repo_overrides() {
   local arg
   for arg in "$@"; do
@@ -76,7 +64,7 @@ reject_repo_overrides() {
   return 0
 }
 
-parse_pr_url "$URL" || exit 1
+fm_pr_parse_url "$URL" || exit 1
 reject_repo_overrides "$@" || exit 1
 
 "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"

@@ -72,6 +72,8 @@ trap 'rm -f "$ERR_FILE"' EXIT
 run_rebase() {
   if command -v timeout >/dev/null 2>&1; then
     timeout "$TIMEOUT_SECS" "$REBASE_BIN" "$PROJECT" "$HEAD_BRANCH"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$TIMEOUT_SECS" "$REBASE_BIN" "$PROJECT" "$HEAD_BRANCH"
   else
     "$REBASE_BIN" "$PROJECT" "$HEAD_BRANCH"
   fi

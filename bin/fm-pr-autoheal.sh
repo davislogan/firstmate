@@ -42,6 +42,16 @@ TIMEOUT_SECS=${FM_PR_AUTOHEAL_TIMEOUT:-600}
 
 status() { printf '%s\n' "$1" >> "$STATUS_FILE"; }
 
+with_timeout() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$TIMEOUT_SECS" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$TIMEOUT_SECS" "$@"
+  else
+    "$@"
+  fi
+}
+
 [ -f "$META" ] || { echo "fm-pr-autoheal: no meta for task $ID at $META" >&2; exit 1; }
 PROJECT=$(grep '^project=' "$META" | tail -1 | cut -d= -f2- || true)
 PR_URL=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
@@ -60,7 +70,7 @@ crew_liveness() {
   fm_backend_agent_alive "$backend" "$target" 2>/dev/null || printf 'unknown'
 }
 
-HEAD_BRANCH=$(gh pr view "$PR_URL" --json headRefName -q .headRefName 2>/dev/null || true)
+HEAD_BRANCH=$(with_timeout gh pr view "$PR_URL" --json headRefName -q .headRefName 2>/dev/null || true)
 if [ -z "$HEAD_BRANCH" ]; then
   status "blocked: PR $PR_URL conflicts with the default branch after a sibling merge; auto-rebase could not run (could not resolve the PR head branch); manual rebase needed"
   exit 1
@@ -70,13 +80,7 @@ ERR_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-pr-autoheal.XXXXXX")
 trap 'rm -f "$ERR_FILE"' EXIT
 
 run_rebase() {
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$TIMEOUT_SECS" "$REBASE_BIN" "$PROJECT" "$HEAD_BRANCH"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$TIMEOUT_SECS" "$REBASE_BIN" "$PROJECT" "$HEAD_BRANCH"
-  else
-    "$REBASE_BIN" "$PROJECT" "$HEAD_BRANCH"
-  fi
+  with_timeout "$REBASE_BIN" "$PROJECT" "$HEAD_BRANCH"
 }
 
 set +e

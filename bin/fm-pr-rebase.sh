@@ -35,6 +35,15 @@ fail_mech() {
   exit 1
 }
 
+git_path() {
+  local p
+  p=$(git -C "$REPO" rev-parse --git-path "$1")
+  case "$p" in
+    /*) printf '%s\n' "$p" ;;
+    *) printf '%s/%s\n' "$REPO" "$p" ;;
+  esac
+}
+
 ORIGIN_URL=$(git -C "$PROJECT_DIR" remote get-url origin 2>/dev/null) \
   || fail_mech "no origin remote in $PROJECT_DIR"
 
@@ -67,8 +76,8 @@ git -C "$REPO" config commit.gpgsign false
 
 git -C "$REPO" checkout --quiet -B "$HEAD_BRANCH" "refs/remotes/origin/$HEAD_BRANCH"
 if ! git -C "$REPO" rebase --quiet "refs/remotes/origin/$DEFAULT" >/dev/null 2>&1; then
-  rebase_merge=$(git -C "$REPO" rev-parse --path-format=absolute --git-path rebase-merge)
-  rebase_apply=$(git -C "$REPO" rev-parse --path-format=absolute --git-path rebase-apply)
+  rebase_merge=$(git_path rebase-merge)
+  rebase_apply=$(git_path rebase-apply)
   if [ -d "$rebase_merge" ] || [ -d "$rebase_apply" ]; then
     FILES=$(git -C "$REPO" diff --name-only --diff-filter=U | tr '\n' ' ')
     git -C "$REPO" rebase --abort >/dev/null 2>&1 || true

@@ -43,7 +43,7 @@ cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
 DEFAULT=$(git ls-remote --symref "$ORIGIN_URL" HEAD 2>/dev/null \
-  | sed -n 's#^ref: refs/heads/\(.*\)\tHEAD$#\1#p' | head -1)
+  | awk '$1 == "ref:" { sub(/^refs\/heads\//, "", $2); print $2; exit }')
 [ -n "$DEFAULT" ] || fail_mech "cannot resolve default branch from origin $ORIGIN_URL"
 
 REPO="$TMP/repo"

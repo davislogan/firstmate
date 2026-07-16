@@ -80,7 +80,6 @@ run_rebase() {
 set +e
 OUT=$(run_rebase 2>"$ERR_FILE")
 RC=$?
-set -e
 # Keep the raw attempt visible in the sweep-provided autoheal log.
 [ -n "$OUT" ] && printf '%s\n' "$OUT"
 cat "$ERR_FILE" >&2 || true

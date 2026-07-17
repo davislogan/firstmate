@@ -7,13 +7,18 @@
 # On detecting its own merge, the generated check.sh also calls
 # fm-pr-conflict-sweep.sh, which sweeps every other in-flight PR-based task
 # for the same project (other state/*.meta with a pr= line and a matching
-# project=) and reports any sibling PR that has newly gone from mergeable to
-# conflicted with main - the moment a merge lands is exactly when a sibling
-# still-open PR is most likely to develop a real conflict, and this closes the
-# gap where that would otherwise only be caught reactively when a captain hits
-# it live on GitHub. fm-pr-conflict-sweep.sh and fm-pr-mergeable.sh own that
+# project=), reports any sibling PR that has newly gone from mergeable to
+# conflicted with main, and dispatches the detached auto-rebase heal - the
+# moment a merge lands is exactly when a sibling still-open PR is most likely
+# to develop a real conflict, and this closes the gap where that would
+# otherwise only be caught reactively when a captain hits it live on GitHub.
+# fm-pr-conflict-sweep.sh, fm-pr-autoheal.sh, and fm-pr-mergeable.sh own that
 # logic; this script only arms the one line in the generated check.sh that
 # calls out to it, so the sweep logic is never duplicated inline per task.
+#
+# Recording also runs fm-pr-sanitize.sh on the PR (unless FM_PR_SANITIZE=0),
+# so no unicode dash survives in a PR title or body by the time the captain
+# sees it; a sanitize failure only warns and never blocks arming the poll.
 # Usage: fm-pr-check.sh <task-id> <pr-url>
 set -eu
 
@@ -42,6 +47,11 @@ if [ -f "$META" ]; then
   if [ -n "$PR_HEAD" ] && ! grep -qxF "pr_head=$PR_HEAD" "$META"; then
     echo "pr_head=$PR_HEAD" >> "$META"
   fi
+fi
+
+if [ "${FM_PR_SANITIZE:-1}" != "0" ]; then
+  "$FM_ROOT/bin/fm-pr-sanitize.sh" "$URL" \
+    || echo "fm-pr-check: warning: PR dash sanitize failed for $URL (continuing)" >&2
 fi
 
 cat > "$STATE/$ID.check.sh" <<EOF

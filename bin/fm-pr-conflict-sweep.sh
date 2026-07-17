@@ -13,7 +13,8 @@
 #
 # Detect + dispatch only. For each sibling PR now "dirty" (GitHub's canonical
 # merge-conflict signal) this prints one wake line, and - unless
-# FM_PR_AUTOREBASE=0 - detaches fm-pr-autoheal.sh (setsid, logging to
+# FM_PR_AUTOREBASE=0 - detaches fm-pr-autoheal.sh (setsid, with a perl
+# new-session re-exec fallback where setsid is absent, logging to
 # state/<id>.autoheal.log) to attempt the clean rebase outside the watcher's
 # FM_CHECK_TIMEOUT budget; the heal's own outcome comes back later as a
 # status-line signal wake, per fm-pr-autoheal.sh's contract. A per-sibling
@@ -49,7 +50,19 @@ dispatch_autoheal() {
   local sib=$1 log="$STATE_DIR/$1.autoheal.log"
   if command -v setsid >/dev/null 2>&1; then
     setsid "$AUTOHEAL_BIN" "$sib" "$STATE_DIR" </dev/null >>"$log" 2>&1 &
+  elif command -v perl >/dev/null 2>&1; then
+    # No setsid (e.g. stock macOS): re-exec into a fresh session via perl, so a
+    # sweep overrunning FM_CHECK_TIMEOUT cannot group-kill an in-flight heal.
+    # Bare nohup only ignores SIGHUP and would stay in the killable group; perl
+    # is the same dependency the watcher's own timeout fallback relies on. Fork
+    # first (as setsid(1) itself does) so the child is never a process-group
+    # leader and POSIX::setsid always succeeds regardless of job-control state.
+    # shellcheck disable=SC2016  # single quotes deliberate: perl expands @ARGV.
+    perl -MPOSIX -e 'my $pid = fork; exit(0) if $pid; POSIX::setsid(); exec @ARGV or die "exec failed: $!"' \
+      -- "$AUTOHEAL_BIN" "$sib" "$STATE_DIR" </dev/null >>"$log" 2>&1 &
   else
+    # Last resort with neither setsid nor perl: nohup cannot escape the process
+    # group, so an overrunning sweep may still reap this heal.
     nohup "$AUTOHEAL_BIN" "$sib" "$STATE_DIR" </dev/null >>"$log" 2>&1 &
   fi
 }

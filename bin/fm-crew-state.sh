@@ -156,8 +156,8 @@ pane_readable() {  # <target>
 # or outcome - AGENTS.md section 11) is not generating for that whole span, so
 # agent.get can read idle/blocked (bin/backends/herdr.sh maps both to `idle`)
 # while the pane's own rendered text still shows the harness's busy banner
-# (FM_TMUX_BUSY_REGEX_DEFAULT, e.g. "esc to interrupt") for the entire tool call, exactly like
-# tmux's regex-only reader would correctly report. Trusting herdr's `idle`
+# (FM_TMUX_BUSY_REGEX_DEFAULT, e.g. "esc to interrupt") for the entire tool
+# call, exactly like tmux's regex-only reader would correctly report. Trusting herdr's `idle`
 # outright (skipping that corroboration) is what let a still-working crew read
 # as not-busy here, and - combined with a no-mistakes run-step lookup that also
 # missed attribution (see nm_runs_status_for_branch) - as not provably working in

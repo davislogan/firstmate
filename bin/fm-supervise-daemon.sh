@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fm-supervise-daemon.sh — presence-gated sub-supervisor (closes #27's P2).
+# fm-supervise-daemon.sh - presence-gated sub-supervisor (closes #27's P2).
 #
 # Wraps bin/fm-watch.sh: runs it as a child, classifies each wake reason, and
 # either SELF-HANDLES the routine majority in bash (no firstmate turn) or
@@ -20,12 +20,12 @@
 # catch-up or when afk is re-entered.
 #
 # IN-BAND SENTINEL MARKER. Every daemon injection is prefixed with
-# FM_INJECT_MARK (ASCII unit separator, 0x1f) — a byte a human would never type
+# FM_INJECT_MARK (ASCII unit separator, 0x1f) - a byte a human would never type
 # at the start of a message. Firstmate's contract: a message that starts with
 # the marker is an internal escalation (stay afk); a message without it means
 # the captain is back (exit afk, flush catch-up, resume per-wake responsiveness).
-# The marker and the busy-guard solve the same problem — the daemon and the
-# human share one input channel — so they live together under /afk.
+# The marker and the busy-guard solve the same problem - the daemon and the
+# human share one input channel - so they live together under /afk.
 #
 # Reliability model (see the /afk skill):
 #   - Nothing is lost in away mode: while state/.afk exists, the watcher reverts
@@ -276,19 +276,19 @@ _collapse_newlines() {  # <text>
 }
 
 # Auto-discover the supervisor pane at startup. Priority:
-#   1. FM_SUPERVISOR_TARGET env (explicit override) — caller passes it in;
+#   1. FM_SUPERVISOR_TARGET env (explicit override) - caller passes it in;
 #      may be a tmux target or a herdr "<session>:<pane-id>" target (paired
 #      with discover_supervisor_backend, below, to know which).
-#   2. $TMUX_PANE — tmux sets this in every pane's environment; inherited by
+#   2. $TMUX_PANE - tmux sets this in every pane's environment; inherited by
 #      the daemon when the /afk skill launches it from firstmate's own pane.
-#   3. $HERDR_ENV=1 + $HERDR_PANE_ID — herdr injects both into every process
+#   3. $HERDR_ENV=1 + $HERDR_PANE_ID - herdr injects both into every process
 #      it manages a pane for (docs/herdr-backend.md); the daemon composes the
 #      "<session>:<pane-id>" target string the herdr adapter expects from
 #      $HERDR_SESSION (defaulting to "default", mirroring
 #      bin/backends/herdr.sh's fm_backend_herdr_session) and $HERDR_PANE_ID.
 #      Checked after $TMUX_PANE so a tmux pane nested inside herdr still
 #      resolves to tmux, matching fm_backend_detect's innermost-first rule.
-#   4. firstmate:0 — legacy tmux fallback (may not resolve if the session is
+#   4. firstmate:0 - legacy tmux fallback (may not resolve if the session is
 #      named differently). The caller logs a warning in that case.
 # Returns the resolved target on stdout; returns 1 if only the fallback is left
 # AND the fallback does not resolve to a live pane.
@@ -314,9 +314,9 @@ discover_supervisor_target() {
 # needs to know which primitives (tmux vs herdr) to dispatch through. Priority
 # mirrors discover_supervisor_target and bin/fm-backend.sh's fm_backend_detect:
 #   1. FM_SUPERVISOR_BACKEND env (explicit override).
-#   2. $TMUX_PANE set — tmux.
-#   3. $HERDR_ENV=1 (with $HERDR_PANE_ID present) — herdr.
-#   4. FM_SUPERVISOR_BACKEND_DEFAULT (tmux) — matches the target fallback above.
+#   2. $TMUX_PANE set - tmux.
+#   3. $HERDR_ENV=1 (with $HERDR_PANE_ID present) - herdr.
+#   4. FM_SUPERVISOR_BACKEND_DEFAULT (tmux) - matches the target fallback above.
 # Returns the resolved backend on stdout; returns 1 if only the fallback is left.
 discover_supervisor_backend() {
   if [ -n "${FM_SUPERVISOR_BACKEND:-}" ]; then
@@ -399,7 +399,7 @@ classify_stale() {  # <window> <state>
   printf 'self|transient stale (%s): %s' "$win" "${last:-no status}"
 }
 
-classify_check() {  # <full reason>  — check scripts print only when firstmate should wake
+classify_check() {  # <full reason>  - check scripts print only when firstmate should wake
   printf 'escalate|%s' "$1"
 }
 
@@ -422,7 +422,7 @@ classify_unknown() {  # <reason>
 
 _stale_key() { printf '%s' "$1" | tr ':/.' '___'; }
 
-stale_marker_record() {  # <window> <state>  — create if absent
+stale_marker_record() {  # <window> <state>  - create if absent
   local win=$1 state=$2 key marker
   key=$(_stale_key "$(window_to_task "$win" "$state")")
   marker="$state/.subsuper-stale-$key"
@@ -557,8 +557,8 @@ escalate_flush() {  # <state>
 # max-defer (the supervisor pane is genuinely busy/wedged, or the submit's Enter
 # is swallowed). The daemon must NEVER silently wedge: this logs
 # an ERROR, drops a durable marker firstmate/recovery can surface, and flashes
-# the supervisor client's status line. Nothing is lost — the buffer and the
-# wake-queue both survive — but the stall stops being invisible.
+# the supervisor client's status line. Nothing is lost - the buffer and the
+# wake-queue both survive - but the stall stops being invisible.
 inject_wedge_alarm() {  # <state> <age-seconds>
   local state=$1 age=$2 marker target backend
   marker="$state/.subsuper-inject-wedged"

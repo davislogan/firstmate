@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# fm-tmux-lib.sh — shared tmux pane primitives for firstmate.
+# fm-tmux-lib.sh - shared tmux pane primitives for firstmate.
 #
-# ONE source of truth for: busy detection, composer-empty (pending-input)
-# detection, and a verify-and-retry-Enter submit. Sourced by both the away-mode
-# daemon (bin/fm-supervise-daemon.sh) and bin/fm-send.sh so the composer/submit
-# logic cannot drift between the two.
+# ONE source of truth for: busy detection (the per-harness footer set, the
+# claude subagent-wait signature, and the text-level busy verdict),
+# composer-empty (pending-input) detection, and a verify-and-retry-Enter submit.
+# Sourced by the always-on watcher (bin/fm-watch.sh), the away-mode daemon
+# (bin/fm-supervise-daemon.sh), bin/fm-crew-state.sh, and the tmux backend
+# adapter (bin/backends/tmux.sh, which bin/fm-send.sh reaches through
+# bin/fm-backend.sh) so the busy and composer/submit logic cannot drift.
 #
 # Why this exists (incident afk-invx-i5): the daemon's old composer check only
 # recognized a BARE prompt glyph ("> ") as an empty composer. claude draws its
@@ -35,9 +38,10 @@
 # returns) so they can be sourced into either context.
 
 # Busy footers per harness. This is the ONE owner of the default set:
-# bin/fm-watch.sh, the daemon, and fm-crew-state.sh source this file and reach it
-# through fm_text_shows_busy (the daemon's inject guard also reads it directly). claude/codex: "esc to
-# interrupt"; opencode: "esc interrupt"; pi: "Working..."; grok: "Ctrl+c:cancel"
+# bin/fm-watch.sh, the daemon, and fm-crew-state.sh source this file and reach
+# it through fm_text_shows_busy (the daemon's inject guard also reads it
+# directly). claude/codex: "esc to interrupt"; opencode: "esc interrupt";
+# pi: "Working..."; grok: "Ctrl+c:cancel"
 # (grok's mid-turn cancel hint, shown iff a turn is running - verified grok 0.2.73).
 # fm_tmux_composer_state also consults this set (a footer on the cursor line is
 # not pending input), so it must stay a vocabulary of footer phrases only; the
@@ -128,7 +132,7 @@ fm_tmux_strip_ghost() {
 # ghost text drops out before classification. The styled capture is internal only,
 # never surfaced. The detector then strips the harness's box-drawing composer
 # borders ("│ … │", heavy "┃", or a plain ASCII "|") using literal-string
-# substitution (bash 3.2 safe, locale-independent — no \u escapes, no multibyte
+# substitution (bash 3.2 safe, locale-independent - no \u escapes, no multibyte
 # character classes), and asks whether anything real is left.
 fm_tmux_composer_state() {  # <target> -> empty|pending|unknown
   local target=$1 cy raw line stripped
@@ -136,7 +140,7 @@ fm_tmux_composer_state() {  # <target> -> empty|pending|unknown
   case "$cy" in ''|*[!0-9]*) printf 'unknown'; return 0 ;; esac
   raw=$(tmux capture-pane -e -p -t "$target" -S "$cy" -E "$cy" 2>/dev/null) || { printf 'unknown'; return 0; }
   line=$(printf '%s\n' "$raw" | fm_tmux_strip_ghost)
-  # Strip the composer box borders (literal glyphs — no character classes).
+  # Strip the composer box borders (literal glyphs - no character classes).
   stripped=${line//│/}      # U+2502 light vertical (claude)
   stripped=${stripped//┃/}  # U+2503 heavy vertical
   stripped=${stripped//|/}  # ASCII pipe
@@ -162,7 +166,7 @@ fm_tmux_composer_state() {  # <target> -> empty|pending|unknown
 
 # fm_pane_input_pending: 0 (pending) if the cursor line holds real unsubmitted
 # text, 1 otherwise. An unreadable pane is treated as NOT pending (fail-safe:
-# the same bias the old daemon used — an unknown pane defers nothing here).
+# the same bias the old daemon used - an unknown pane defers nothing here).
 fm_pane_input_pending() {  # <target>
   [ "$(fm_tmux_composer_state "$1")" = pending ]
 }
@@ -224,7 +228,7 @@ fm_pane_is_busy() {  # <target>
 }
 
 # fm_tmux_submit_core: type <text> into <target> ONCE, then submit with Enter,
-# verifying the composer cleared. Retries Enter ONLY — never retypes, because a
+# verifying the composer cleared. Retries Enter ONLY - never retypes, because a
 # swallowed Enter leaves our text in the composer and retyping would duplicate
 # it. Echoes the final verdict on stdout (empty|pending|unknown|send-failed) so callers can
 # pick their own success policy:

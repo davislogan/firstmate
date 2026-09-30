@@ -25,6 +25,10 @@
 #       This is the direct regression pair for the 2026-07-02 herdr incident,
 #       proving the watcher's own absorb-only-when-provably-working predicate
 #       benefits from the fix in both directions.
+#   (l) claude crew waiting on its own background subagents (turn ended, no
+#       "esc to interrupt" footer, roster below the composer) -> pane, provably
+#       working; the same pane after the wait row is gone, or with the wait
+#       phrase only quoted in transcript text, stays NOT provably working.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -85,7 +89,8 @@ case "${1:-}" in
     printf '%%1\n' ;;
   capture-pane)
     [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
-    if [ "${FM_FAKE_BUSY:-0}" = 1 ]; then printf 'work in progress\nesc to interrupt\n'
+    if [ -n "${FM_FAKE_PANE_FILE:-}" ]; then cat "$FM_FAKE_PANE_FILE"
+    elif [ "${FM_FAKE_BUSY:-0}" = 1 ]; then printf 'work in progress\nesc to interrupt\n'
     else printf 'all quiet\n> \n'; fi ;;
 esac
 exit 0
@@ -159,6 +164,8 @@ reset_fakes() {
   FM_FAKE_HERDR_MISSING=0
   FM_FAKE_HERDR_AGENT_STATUS=""
   FM_FAKE_CI_LOGS=""
+  FM_FAKE_PANE_FILE=""
+  export FM_FAKE_PANE_FILE
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_TMUX_MISSING
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
 }
@@ -1118,6 +1125,99 @@ EOF
   pass "crew_is_provably_working still surfaces a genuinely stopped crew (safety property preserved)"
 }
 
+# (l) Claude subagent-wait panes. Fixtures mirror a live capture (2026-09-30):
+# the wait row sits directly above the composer box, and the subagent roster is
+# drawn below it, so the wait row is outside the 6-line busy-footer window.
+RULE='────────────────────────────────────────'
+write_subagent_wait_pane() {  # <file>
+  cat > "$1" <<EOF
+● The four research agents are running in the background.
+
+✻ Waiting for 4 background agents to finish
+
+$RULE
+❯ 
+$RULE
+  [O5.5] pontoon-app(3486271) [7%] w1%  2.62
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent
+
+  ● main
+  ◯ general-purpose  Comparing can-end prices        1m 50s · ↓ 77.4k tokens
+  ◯ general-purpose  Scraping hops page              1m 33s · ↓ 73.7k tokens
+  ◯ general-purpose  Looking up shipping origin      1m 18s · ↓ 72.9k tokens
+  ◯ general-purpose  Fetching extract use levels        56s · ↓ 74.2k tokens
+EOF
+}
+
+# Same pane once the turn has genuinely ended: the wait row is gone and the
+# final message sits above the composer.
+write_stopped_pane() {  # <file>
+  cat > "$1" <<EOF
+✻ Waiting for 4 background agents to finish
+● All four agents reported back. Report written to data/x/report.md.
+
+$RULE
+❯ 
+$RULE
+  [O5.5] pontoon-app(3486271) [7%] w1%  2.62
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+EOF
+}
+
+# The wait phrase appears only as quoted transcript text (e.g. a report about
+# this very state), never as the spinner row above the composer.
+write_quoted_pane() {  # <file>
+  cat > "$1" <<EOF
+● If it shows the line
+  ✻ Waiting for 4 background agents to finish
+  the crew is healthy.
+● Done.
+
+$RULE
+❯ 
+$RULE
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+EOF
+}
+
+test_subagent_wait_pane_is_working() {
+  reset_fakes
+  local d; d=$(new_case subagent-wait)
+  make_repo_on_branch "$d/wt" fm/feat-sub
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-sub.meta" "window=fm:fm-feat-sub" "worktree=$d/wt" "kind=scout"
+  printf 'working: fanning out research\n' > "$d/state/feat-sub.status"
+  write_subagent_wait_pane "$d/pane.txt"
+  # Pin the trap: the wait row really is outside the 6-line footer window.
+  grep -v '^[[:space:]]*$' "$d/pane.txt" | tail -6 | grep -q 'Waiting for' \
+    && fail "fixture no longer exercises the out-of-window wait row"
+  FM_FAKE_PANE_FILE="$d/pane.txt"
+  local out; out=$(run_crew_state "$d" feat-sub)
+  assert_contains "$out" "state: working" "subagent-wait pane -> working"
+  assert_contains "$out" "source: pane" "subagent-wait pane -> pane source"
+  PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" crew_is_provably_working feat-sub \
+    || fail "a claude crew waiting on its own subagents was not provably working"
+  pass "claude crew waiting on background subagents reads working from the pane and is provably working"
+}
+
+test_subagent_wait_gone_is_not_working() {
+  reset_fakes
+  local d f; d=$(new_case subagent-stopped)
+  make_repo_on_branch "$d/wt" fm/feat-sub2
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-sub2.meta" "window=fm:fm-feat-sub2" "worktree=$d/wt" "kind=scout"
+  printf 'working: fanning out research\n' > "$d/state/feat-sub2.status"
+  for f in stopped quoted; do
+    "write_${f}_pane" "$d/$f.txt"
+    FM_FAKE_PANE_FILE="$d/$f.txt"
+    local out; out=$(run_crew_state "$d" feat-sub2)
+    assert_not_contains "$out" "source: pane" "$f pane must not read as a busy pane"
+    PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" crew_is_provably_working feat-sub2 \
+      && fail "$f pane (no live subagent wait) was treated as provably working"
+  done
+  pass "a stopped crew, or one merely quoting the wait phrase, is still surfaced (safety property preserved)"
+}
+
 # Usage error (no id) is the one non-zero exit.
 test_usage_error() {
   reset_fakes
@@ -1167,6 +1267,8 @@ test_torn_down_worktree
 test_missing_meta
 test_provably_working_via_runs_list_fallback
 test_not_provably_working_when_stopped
+test_subagent_wait_pane_is_working
+test_subagent_wait_gone_is_not_working
 test_usage_error
 
 echo "all fm-crew-state tests passed"

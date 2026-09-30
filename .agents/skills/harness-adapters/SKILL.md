@@ -97,7 +97,7 @@ Natural language is acceptable if uncertain.
 
 | Fact | Value |
 |---|---|
-| Busy-pane signature | `esc to interrupt` |
+| Busy-pane signature | `esc to interrupt`; also a `Waiting for N background agents to finish` spinner row directly above the composer while the crew's turn has ended but its own subagents run (matched by `fm_text_awaiting_subagents` in `bin/fm-tmux-lib.sh`) |
 | Exit command | `/exit` |
 | Interrupt | single Escape |
 | Skill invocation | `/<skill>` (e.g. `/no-mistakes`) |

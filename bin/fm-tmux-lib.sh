@@ -35,8 +35,8 @@
 # returns) so they can be sourced into either context.
 
 # Busy footers per harness. This is the ONE owner of the default set:
-# bin/fm-watch.sh sources this file and defaults its BUSY_REGEX to it, and the
-# daemon and fm-crew-state.sh read it directly. claude/codex: "esc to
+# bin/fm-watch.sh, the daemon, and fm-crew-state.sh source this file and reach it
+# through fm_text_shows_busy (the daemon's inject guard also reads it directly). claude/codex: "esc to
 # interrupt"; opencode: "esc interrupt"; pi: "Working..."; grok: "Ctrl+c:cancel"
 # (grok's mid-turn cancel hint, shown iff a turn is running - verified grok 0.2.73).
 # fm_tmux_composer_state also consults this set (a footer on the cursor line is

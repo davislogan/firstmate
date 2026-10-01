@@ -542,7 +542,18 @@ test_nonterminal_stale_not_working_surfaced() {
   [ ! -e "$state/.stale-since-$key" ] || fail "stale-since timer should not be set when surfacing immediately"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the immediate stale failed"
   grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "immediate stale wake was not queued"
-  pass "a not-provably-working non-terminal stale is surfaced immediately (never left to wait out the timer)"
+  # The 2026-09-30 loop: the same stopped pane must not fall into the wedge
+  # timer on later polls and re-surface as a "possible wedge" forever.
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 40; then
+    reap "$pid"; fail "an already-surfaced stopped pane was re-surfaced as a wedge: $(cat "$out")"
+  fi
+  reap "$pid"
+  pass "a not-provably-working non-terminal stale is surfaced immediately and once (never left to wait out the timer, never wedge-repeated)"
 }
 
 # --- consecutive wedge escalations on the same pane demand deep inspection ----
@@ -605,8 +616,165 @@ test_wedge_escalation_marks_demand_deep_inspection_after_threshold() {
     n=$((n + 1))
   done
   [ "$(cat "$state/.wedge-escalations-$key" 2>/dev/null || echo 0)" = 3 ] || fail "escalation counter did not persist across consecutive rounds"
+  grep -F "further wedge escalations suppressed" "$out" >/dev/null || fail "the capping escalation did not say further escalations are suppressed: $(cat "$out")"
   unset FM_FAKE_CREW_STATE
   pass "consecutive wedge escalations on the same pane accumulate and demand deep inspection at the threshold"
+}
+
+# Seed a window whose wedge escalations already hit the cap on an unchanged
+# pane: hash/stale/count say "same stale hash, already classified", the
+# escalation count sits at the threshold with the status line it was recorded
+# against, and the wedge timer is long past due. Echoes the pane key.
+seed_capped_wedge() {  # <state> <capture-file> <window> <task> <pane-text> <status-line>
+  local state=$1 capture_file=$2 window=$3 task=$4 text=$5 line=$6 key pane_hash sig
+  printf '%s' "$text" > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/$task.meta"
+  printf '%s\n' "$line" > "$state/$task.status"
+  sig=$(seen_sig "$state/$task.status"); printf '%s' "$sig" > "$state/.seen-${task}_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "$text")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  echo $(( $(date +%s) - 5000 )) > "$state/.stale-since-$key"
+  printf '3\n' > "$state/.wedge-escalations-$key"
+  printf '%s' "$line" > "$state/.wedge-escalations-$key.status"
+  printf '%s\n' "$key"
+}
+
+# --- the wedge-escalation cap: no unbounded repeats on an unchanged pane -------
+# 2026-09-30 incident: a dead scout pane wedge-escalated 200+ times (one LLM
+# turn each) because nothing ever stopped the repeat on an unchanged hash.
+
+test_wedge_escalation_capped_on_unchanged_pane() {
+  local dir state fakebin out capture_file window key pid
+  dir=$(make_case wedge-cap); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-wedge-cap"
+  key=$(seed_capped_wedge "$state" "$capture_file" "$window" wedge-cap "idle frozen pane" "working: still monitoring ci")
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  # Several polls with an overdue timer: a capped pane must stay silent.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 40; then
+    reap "$pid"; fail "a capped wedge on an unchanged pane re-surfaced: $(cat "$out")"
+  fi
+  reap "$pid"
+  [ ! -s "$out" ] || fail "a capped wedge printed a wake reason: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "a capped wedge enqueued a wake"
+  [ "$(cat "$state/.wedge-escalations-$key")" = 3 ] || fail "a capped wedge kept counting escalations"
+  unset FM_FAKE_CREW_STATE
+  pass "wedge escalations on an unchanged pane stop at the cap instead of repeating forever"
+}
+
+test_wedge_cap_lifted_by_pane_change() {
+  local dir state fakebin out capture_file window key pid new_hash
+  dir=$(make_case wedge-cap-pane-change); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-wedge-cap-change"
+  key=$(seed_capped_wedge "$state" "$capture_file" "$window" wedge-cap-change "idle frozen pane" "working: still monitoring ci")
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  # The crew resumes and goes quiet again on a NEW pane: the cap lifts and the
+  # new hash is classified (absorbed as provably working) like any first sight.
+  printf 'resumed, now idle on a new screen' > "$capture_file"
+  new_hash=$(hash_text "resumed, now idle on a new screen")
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 50; then
+    reap "$pid"; fail "watcher exited while absorbing a changed provably-working pane: $(cat "$out")"
+  fi
+  reap "$pid"
+  [ ! -e "$state/.wedge-escalations-$key" ] || fail "a pane change did not lift the wedge-escalation cap"
+  [ ! -e "$state/.wedge-escalations-$key.status" ] || fail "a pane change left the cap's status record behind"
+  [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$new_hash" ] || fail "the new stale hash was not classified"
+  # The next wedge on the new pane surfaces normally again, from escalation 1.
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "a wedge on the changed pane did not surface after the cap lifted"
+  grep -F "possible wedge, escalation 1)" "$out" >/dev/null || fail "post-reset wedge did not restart at escalation 1 with the usual wording: $(cat "$out")"
+  unset FM_FAKE_CREW_STATE
+  pass "a pane change lifts the wedge-escalation cap and later wedges surface from escalation 1"
+}
+
+test_wedge_cap_new_status_still_surfaces() {
+  local dir state fakebin out capture_file window key pid sig
+  dir=$(make_case wedge-cap-new-status); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-wedge-cap-status"
+  key=$(seed_capped_wedge "$state" "$capture_file" "$window" wedge-cap-status "idle frozen pane" "working: still monitoring ci")
+  export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  # A captain-relevant verb lands on the silenced window: it surfaces at once.
+  printf 'done: PR https://example.invalid/pull/1 checks green\n' >> "$state/wedge-cap-status.status"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "a captain-relevant status on a wedge-capped window was swallowed"
+  grep -F "signal: $state/wedge-cap-status.status" "$out" >/dev/null || fail "the new captain-relevant status did not surface as a signal: $(cat "$out")"
+
+  # A new no-verb status line (already seen by the signal scan) lifts the cap,
+  # so a later wedge on the same pane can escalate again.
+  key=$(seed_capped_wedge "$state" "$capture_file" "$window" wedge-cap-status "idle frozen pane" "working: still monitoring ci")
+  printf 'working: retrying ci\n' >> "$state/wedge-cap-status.status"
+  sig=$(seen_sig "$state/wedge-cap-status.status"); printf '%s' "$sig" > "$state/.seen-wedge-cap-status_status"
+  rm -f "$state/.wake-queue"; : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "watcher exited while lifting the cap on a new no-verb status line: $(cat "$out")"
+  fi
+  reap "$pid"
+  [ ! -e "$state/.wedge-escalations-$key" ] || fail "a new status line did not lift the wedge-escalation cap"
+  unset FM_FAKE_CREW_STATE
+  pass "a wedge-capped window still surfaces a new captain-relevant status, and a new status line lifts the cap"
+}
+
+# --- a dead agent surfaces once, never as a repeating wedge -------------------
+
+test_dead_agent_stale_surfaces_once() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case dead-agent-stale); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"
+  window="test:fm-dead-agent"
+  printf 'frozen transcript of a dead session' > "$capture_file"
+  printf 'window=%s\nkind=scout\n' "$window" > "$state/dead-agent.meta"
+  printf 'working: drafting report\n' > "$state/dead-agent.status"
+  sig=$(seen_sig "$state/dead-agent.status"); printf '%s' "$sig" > "$state/.seen-dead-agent_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "frozen transcript of a dead session")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # Even a (mistaken) provably-working verdict must not outrank a confirmed-dead agent.
+  export FM_FAKE_CREW_STATE='state: working · source: pane · harness busy'
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" FM_FAKE_TMUX_CURRENT_COMMAND=bash \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "a dead-agent stale pane did not surface"
+  grep -Fx "stale: $window (agent process exited - dead pane)" "$out" >/dev/null || fail "dead-agent stale reason missing: $(cat "$out")"
+  [ ! -e "$state/.stale-since-$key" ] || fail "a dead-agent pane started a wedge timer"
+  # Same dead pane on the next watcher run: already surfaced, stays silent.
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" FM_FAKE_TMUX_CURRENT_COMMAND=bash \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 40; then
+    reap "$pid"; fail "a dead-agent pane re-surfaced on an unchanged hash: $(cat "$out")"
+  fi
+  reap "$pid"
+  unset FM_FAKE_CREW_STATE
+  pass "a stale pane whose agent process exited surfaces once as dead, never as a repeating wedge"
 }
 
 test_wedge_escalation_resets_when_pane_becomes_active() {
@@ -833,6 +1001,10 @@ test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold
 test_wedge_escalation_resets_when_pane_becomes_active
+test_wedge_escalation_capped_on_unchanged_pane
+test_wedge_cap_lifted_by_pane_change
+test_wedge_cap_new_status_still_surfaces
+test_dead_agent_stale_surfaces_once
 test_nonterminal_stale_not_working_surfaced
 test_nonterminal_stale_repairs_missing_or_corrupt_timer
 test_triage_log_size_cap_accepts_spaced_wc_counts

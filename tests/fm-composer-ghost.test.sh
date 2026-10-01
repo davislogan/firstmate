@@ -152,6 +152,21 @@ test_normal_text_still_pending() {
   pass "fm_pane_input_pending: normal-intensity typed text is still pending"
 }
 
+# The claude subagent-wait signature is a separate busy predicate, NOT part of the
+# busy-footer vocabulary the composer reader consults, so typing that phrase into
+# the composer must still read as pending (fm-send submit verification).
+test_subagent_wait_phrase_in_composer_is_pending() {
+  local dir fb capture
+  dir="$TMP_ROOT/subagent-phrase"; mkdir -p "$dir"
+  fb=$(make_fake_tmux "$dir")
+  capture="$dir/styled.txt"
+  printf '\xe2\x9d\xaf Waiting for 4 background agents to finish\n' > "$capture"
+  PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY=0 \
+    fm_pane_input_pending "fakepane" \
+    || fail "typed subagent-wait phrase was misread as an empty composer"
+  pass "fm_pane_input_pending: typed subagent-wait phrase is still pending"
+}
+
 test_colored_text_with_2_payload_still_pending() {
   local dir fb capture
   dir="$TMP_ROOT/colored-text"; mkdir -p "$dir"
@@ -222,6 +237,7 @@ test_strip_ghost_keeps_colored_text_with_2_payloads
 test_dim_ghost_only_composer_is_not_pending
 test_dim_ghost_inside_bordered_composer_is_not_pending
 test_normal_text_still_pending
+test_subagent_wait_phrase_in_composer_is_pending
 test_colored_text_with_2_payload_still_pending
 test_real_text_with_trailing_ghost_is_pending
 test_peek_output_is_escape_free

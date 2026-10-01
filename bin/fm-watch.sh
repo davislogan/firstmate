@@ -56,7 +56,7 @@ mkdir -p "$STATE"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # The DEFAULT EVENT SOURCE: this watcher's poll loop over the pull primitives
-# (capture, recorded windows, backend busy-state, and the BUSY_REGEX fallback)
+# (capture, recorded windows, backend busy-state, and the busy-regex fallback)
 # synthesizes the signal/stale/check/heartbeat wake vocabulary for backends with
 # no native event push. tmux always reports unknown busy-state, preserving the
 # original regex path. herdr contributes native semantic busy-state through the
@@ -64,6 +64,10 @@ mkdir -p "$STATE"
 # see bin/fm-backend.sh and docs/herdr-backend.md.
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# Busy vocabulary + text-level busy verdict (FM_TMUX_BUSY_REGEX_DEFAULT,
+# fm_text_shows_busy); pure definitions, safe to source alongside the backend.
+# shellcheck source=bin/fm-tmux-lib.sh
+. "$SCRIPT_DIR/fm-tmux-lib.sh"
 
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
@@ -119,12 +123,10 @@ CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}     # seconds allowed per *.check.sh
 SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trailing
                                       # signals (a status write, then the same turn's
                                       # turn-end hook) coalesce into one wake
-# Busy signatures per harness, OR-ed. Extend via env when new adapters are verified.
-# claude/codex: "esc to interrupt"; opencode: "esc interrupt"; pi: "Working...";
-# grok: "Ctrl+c:cancel" (the mid-turn cancel hint in grok's keybind bar, shown iff a
-# turn is running; absent when idle - verified grok 0.2.73, ASCII to avoid the
-# locale fragility of matching grok's braille spinner glyph directly).
-BUSY_REGEX=${FM_BUSY_REGEX:-'esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel'}
+# Busy signatures: window_is_busy's regex fallback is fm_text_shows_busy in
+# bin/fm-tmux-lib.sh, the one owner of the per-harness footer set
+# (FM_TMUX_BUSY_REGEX_DEFAULT, overridable via FM_BUSY_REGEX) and of the claude
+# subagent-wait signature.
 # Always-on wake triage: most wakes during a long crew validation are benign (a
 # working: note or turn-end while a pipeline runs, a no-change heartbeat). Rather
 # than wake firstmate's LLM for each, this watcher classifies every wake in bash
@@ -175,8 +177,8 @@ hash_pane() {
 # a backend's native semantic busy state (fm_backend_busy_state - herdr's
 # agent.get; herdr-addendum "busy state" row, "the first backend where
 # fm_session_busy_state gets real semantics"); falls back to the existing
-# pane-tail regex ONLY when the backend reports unknown (tmux always does, so
-# its path is unchanged byte-for-byte). <tail40> is the same bounded capture
+# pane-tail text verdict (fm_text_shows_busy: busy footer or claude subagent
+# wait) ONLY when the backend reports unknown (tmux always does). <tail40> is the same bounded capture
 # already read for hashing, so this adds no extra backend calls on the
 # regex-fallback path.
 window_is_busy() {  # <window> <tail40>
@@ -186,7 +188,7 @@ window_is_busy() {  # <window> <tail40>
     busy) return 0 ;;
     idle) return 1 ;;
     *)
-      printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -6 | grep -qiE "$BUSY_REGEX"
+      printf '%s' "$tail40" | fm_text_shows_busy
       ;;
   esac
 }
@@ -504,9 +506,11 @@ EOF
       n=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 ))
       echo "$n" > "$cf"
       # Busy match: a backend's native semantic state when available (herdr),
-      # else the last 6 non-blank lines only (the TUI footer area, where every
-      # verified harness renders its busy indicator) so busy-looking strings
-      # in displayed content cannot suppress stale detection.
+      # else fm_text_shows_busy: a busy footer in the last 6 non-blank lines
+      # only (the TUI footer area, where every verified harness renders its
+      # busy indicator) so busy-looking strings in displayed content cannot
+      # suppress stale detection, or claude's structurally anchored
+      # subagent-wait row (bin/fm-tmux-lib.sh owns both).
       if [ "$n" -ge 2 ] && ! window_is_busy "$w" "$tail40"; then
         # The pane is idle/stale at hash $h. Triage decides whether this wakes
         # firstmate. Detection itself is unchanged from above.

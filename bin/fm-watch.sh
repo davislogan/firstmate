@@ -29,8 +29,9 @@
 #                          resume - and that escalation is the last: further
 #                          wedge escalations for the same unchanged pane and
 #                          status line are suppressed (pane change, busy pane, or
-#                          new status line lifts the cap). A pane whose agent
-#                          process the backend confidently reports exited is
+#                          new status line lifts the cap). A tmux pane whose
+#                          agent process has confidently exited (bare shell;
+#                          other backends are never judged dead here) is
 #                          never treated as provably working: it surfaces once
 #                          as "agent process exited - dead pane".
 #                          A NOT-provably-working TERMINAL stale (a crew
@@ -294,13 +295,18 @@ wedge_record() {  # <escalation-file> <count> <status-line>
   printf '%s' "$3" > "$1.status"
 }
 
-# window_agent_dead: 0 only when the backend CONFIDENTLY reports no live agent
-# process in <window>'s pane (fm_backend_agent_alive's "dead": tmux sees a bare
-# shell, herdr a husk). "unknown" is never treated as dead. A dead agent can
-# never resume, so the stale paths surface it once instead of absorbing it as
-# provably working and then wedge-escalating on a pane that will never change.
+# window_agent_dead: 0 only when a tmux-backed <window>'s pane CONFIDENTLY has
+# no live agent process (fm_backend_agent_alive's "dead": tmux sees a bare
+# shell). Only tmux's bare-shell probe is trusted for crewmate supervision;
+# every other backend is treated as unknown, and "unknown" is never dead. A
+# dead agent can never resume, so the stale paths surface it once instead of
+# absorbing it as provably working and then wedge-escalating on a pane that
+# will never change.
 window_agent_dead() {  # <window>
-  [ "$(fm_backend_agent_alive "$(window_backend "$1")" "$1" 2>/dev/null)" = dead ]
+  local backend
+  backend=$(window_backend "$1")
+  [ "$backend" = tmux ] || return 1
+  [ "$(fm_backend_agent_alive "$backend" "$1" 2>/dev/null)" = dead ]
 }
 
 # Repeat-poll wedge-timer bookkeeping for an already-classified stale hash

@@ -18,14 +18,22 @@
 #                          firstmate hands it to a no-mistakes validation. Only when
 #                          NOT provably working does the log's last line decide:
 #                          terminal (captain-relevant) or non-terminal (no verb),
-#                          both surfaced at once. A provably-working stale past the
+#                          both surfaced at once, and a non-terminal one only once
+#                          per unchanged pane. A provably-working stale past the
 #                          wedge threshold also surfaces, with an "escalation N"
 #                          count in the reason; at FM_WEDGE_DEMAND_INSPECT_COUNT
 #                          consecutive escalations on the SAME pane, the reason
 #                          also carries a "demand-deep-inspection" marker so the
 #                          wake payload itself, not just repetition, forces a
 #                          closer look instead of another routine supervision
-#                          resume. A NOT-provably-working TERMINAL stale (a crew
+#                          resume - and that escalation is the last: further
+#                          wedge escalations for the same unchanged pane and
+#                          status line are suppressed (pane change, busy pane, or
+#                          new status line lifts the cap). A pane whose agent
+#                          process the backend confidently reports exited is
+#                          never treated as provably working: it surfaces once
+#                          as "agent process exited - dead pane".
+#                          A NOT-provably-working TERMINAL stale (a crew
 #                          parked at a needs-decision/blocked/done human gate)
 #                          fires once per distinct captain-relevant status line;
 #                          once .hb-surfaced-<task> records that line as delivered
@@ -252,28 +260,75 @@ wake() {
   exit 0
 }
 
-# Consecutive wedge-escalation count for a window past FM_WEDGE_DEMAND_INSPECT_COUNT
-# (default 3): a pane that keeps re-wedging on the SAME stale hash - each
-# escalation gets absorbed again as "still validating" one poll later, since the
-# hash never changes - can otherwise repeat forever with no signal that this is
-# no longer a one-off. At the threshold, wedge_timer_check appends a
-# "demand-deep-inspection" marker to the wake payload so the wake reason itself
-# (not just repetition the supervisor has to notice on its own) forces a closer
-# look instead of another routine supervision resume. Reset wherever a window's
-# pane/hash state resets to genuinely active (see the two rm-on-reset call sites
-# below).
+# Consecutive wedge-escalation count for a window, capped at
+# FM_WEDGE_DEMAND_INSPECT_COUNT (default 3): a pane that keeps re-wedging on the
+# SAME stale hash - each escalation gets absorbed again as "still validating" one
+# poll later, since the hash never changes - would otherwise repeat forever (the
+# 2026-09-30 incident: a dead scout pane escalated 200+ times, one LLM turn
+# each). At the threshold, wedge_timer_check appends a "demand-deep-inspection"
+# marker to the wake payload so the wake reason itself forces a closer look, and
+# that escalation is the LAST one for this pane: further wedge escalations are
+# suppressed (a hard cap, not a backoff - a backoff still wakes forever on a
+# pane that will never change, and three identical wakes already said all an
+# unchanged pane can say). The cap lifts wherever the window's pane/hash state
+# resets to genuinely active (see the rm-on-reset call sites below) and when the
+# crew's status log gains a new last line (recorded per escalation in
+# <escalation-file>.status). A non-terminal stale already surfaced as stopped
+# (not provably working, or a dead agent) starts out capped: its hash stays
+# recorded in .stale-*, so without that every later poll would otherwise fall
+# into the wedge timer and re-surface the same stopped pane as a "possible
+# wedge" every STALE_ESCALATE_SECS - the actual mechanism of the 2026-09-30
+# loop. Signal, check, and heartbeat-backstop wakes never pass through here, so
+# a captain-relevant status on a silenced window still surfaces through them
+# exactly as before.
 FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
+
+window_status_line() {  # <window>
+  last_status_line "$STATE/$(window_to_task "$1" "$STATE").status"
+}
+
+# wedge_record: persist the escalation count and the status line it was
+# recorded against (the cap lifts when that line changes).
+wedge_record() {  # <escalation-file> <count> <status-line>
+  echo "$2" > "$1"
+  printf '%s' "$3" > "$1.status"
+}
+
+# window_agent_dead: 0 only when the backend CONFIDENTLY reports no live agent
+# process in <window>'s pane (fm_backend_agent_alive's "dead": tmux sees a bare
+# shell, herdr a husk). "unknown" is never treated as dead. A dead agent can
+# never resume, so the stale paths surface it once instead of absorbing it as
+# provably working and then wedge-escalating on a pane that will never change.
+window_agent_dead() {  # <window>
+  [ "$(fm_backend_agent_alive "$(window_backend "$1")" "$1" 2>/dev/null)" = dead ]
+}
 
 # Repeat-poll wedge-timer bookkeeping for an already-classified stale hash
 # absorbed as provably-working - repairs a missing/corrupt timer (self-heals a
 # watcher restart between recording the hash and recording the timer), or
-# escalates once STALE_ESCALATE_SECS have elapsed. Never re-reads the crew
-# state (the costly check already ran once, at classification time). Shared by
-# both places a hash can be absorbed this way: the plain non-terminal path,
-# and the stale_is_terminal-overridden path (a captain-relevant status-log
-# line that an active run/busy pane outranked).
+# escalates once STALE_ESCALATE_SECS have elapsed, at most
+# FM_WEDGE_DEMAND_INSPECT_COUNT times per unchanged pane (see the cap above).
+# Never re-reads the crew state (the costly check already ran once, at
+# classification time); only the cheap agent-liveness probe runs, and only when
+# an escalation is due. Shared by both places a hash can be absorbed this way:
+# the plain non-terminal path, and the stale_is_terminal-overridden path (a
+# captain-relevant status-log line that an active run/busy pane outranked).
 wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file>
-  local win=$1 since_file=$2 label=$3 escalation_file=$4 since age n reason
+  local win=$1 since_file=$2 label=$3 escalation_file=$4 since age n reason status_line
+  status_line=$(window_status_line "$win")
+  n=$(cat "$escalation_file" 2>/dev/null || echo 0)
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  if [ "$n" -ge "$FM_WEDGE_DEMAND_INSPECT_COUNT" ]; then
+    if [ "$(cat "$escalation_file.status" 2>/dev/null || true)" = "$status_line" ]; then
+      return 0  # capped: same pane, same status line - stay silent
+    fi
+    # A new status line since the last escalation: lift the cap and restart.
+    rm -f "$escalation_file" "$escalation_file.status"
+    n=0
+    date +%s > "$since_file"
+    triage_log "absorbed $label wedge cap lifted (new status line): $win"
+    return 0
+  fi
   since=$(cat "$since_file" 2>/dev/null || true)
   case "$since" in
     ''|*[!0-9]*)
@@ -283,12 +338,16 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
     *)
       age=$(( $(date +%s) - since ))
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
-        n=$(( $(cat "$escalation_file" 2>/dev/null || echo 0) + 1 ))
-        echo "$n" > "$escalation_file"
+        n=$(( n + 1 ))
         reason="stale: $win (idle ${age}s, possible wedge, escalation $n)"
-        if [ "$n" -ge "$FM_WEDGE_DEMAND_INSPECT_COUNT" ]; then
-          reason="stale: $win (idle ${age}s, possible wedge, escalation $n, demand-deep-inspection: same pane has wedge-escalated $n times in a row - do not re-absorb on the run-step/pane state alone)"
+        if window_agent_dead "$win"; then
+          # The agent process is gone: report it once and go straight to the cap.
+          n=$FM_WEDGE_DEMAND_INSPECT_COUNT
+          reason="stale: $win (idle ${age}s, agent process exited - dead pane; further wedge escalations suppressed until the pane changes)"
+        elif [ "$n" -ge "$FM_WEDGE_DEMAND_INSPECT_COUNT" ]; then
+          reason="stale: $win (idle ${age}s, possible wedge, escalation $n, demand-deep-inspection: same pane has wedge-escalated $n times in a row - do not re-absorb on the run-step/pane state alone; further wedge escalations suppressed until the pane changes)"
         fi
+        wedge_record "$escalation_file" "$n" "$status_line"
         fm_wake_append stale "$win" "$reason" || exit 1
         rm -f "$since_file"
         wake "$reason"
@@ -537,7 +596,7 @@ EOF
           # authoritative source fm-crew-state.sh itself already prioritizes
           # over the log) a chance to override before trusting the log.
           if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
-            if crew_is_provably_working "$(window_to_task "$w" "$STATE")"; then
+            if ! window_agent_dead "$w" && crew_is_provably_working "$(window_to_task "$w" "$STATE")"; then
               printf '%s' "$h" > "$sf"
               date +%s > "$ssf"
               triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
@@ -589,7 +648,15 @@ EOF
           #     status, waiting on a decision, or wedged) instead of leaving the
           #     finish to wait out the timer.
           if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
-            if crew_is_provably_working "$(window_to_task "$w" "$STATE")"; then
+            if window_agent_dead "$w"; then
+              # The agent process exited: it can never resume, so surface once
+              # (per stale hash, like any stopped crew) and never wedge-time it.
+              fm_wake_append stale "$w" "stale: $w (agent process exited - dead pane)" || exit 1
+              printf '%s' "$h" > "$sf"
+              rm -f "$ssf"
+              wedge_record "$ewf" "$FM_WEDGE_DEMAND_INSPECT_COUNT" "$(window_status_line "$w")"
+              wake "stale: $w (agent process exited - dead pane)"
+            elif crew_is_provably_working "$(window_to_task "$w" "$STATE")"; then
               printf '%s' "$h" > "$sf"
               date +%s > "$ssf"
               triage_log "absorbed non-terminal stale (provably working): $w"
@@ -597,6 +664,9 @@ EOF
               fm_wake_append stale "$w" "stale: $w" || exit 1
               printf '%s' "$h" > "$sf"
               rm -f "$ssf"
+              # Surfaced as stopped: start capped so later polls of this same
+              # hash do not wedge-escalate it (see the cap above).
+              wedge_record "$ewf" "$FM_WEDGE_DEMAND_INSPECT_COUNT" "$(window_status_line "$w")"
               wake "stale: $w"
             fi
           else
@@ -605,15 +675,16 @@ EOF
         fi
       else
         # Pane busy or not yet stably stale: it is alive, so clear any pending
-        # stale escalation timer and the consecutive wedge-escalation count.
-        rm -f "$ssf" "$ewf"
+        # stale escalation timer and the consecutive wedge-escalation count
+        # (lifting any wedge-escalation cap).
+        rm -f "$ssf" "$ewf" "$ewf.status"
       fi
     else
       printf '%s' "$h" > "$hf"
       echo 0 > "$cf"
       # Pane content changed: the crew is active again, so reset the escalation
-      # timer and the consecutive wedge-escalation count.
-      rm -f "$ssf" "$ewf"
+      # timer and the consecutive wedge-escalation count (lifting any cap).
+      rm -f "$ssf" "$ewf" "$ewf.status"
     fi
   done < <(recorded_windows)
 

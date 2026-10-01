@@ -51,6 +51,11 @@ if [ "${1:-}" = "capture-pane" ]; then
   fi
   exit 0
 fi
+# Agent-liveness probe (fm_backend_tmux_agent_alive): answer only when a test
+# sets FM_FAKE_TMUX_CURRENT_COMMAND, so every other case keeps reading unknown.
+if [ "${1:-}" = "display-message" ] && [ -n "${FM_FAKE_TMUX_CURRENT_COMMAND:-}" ]; then
+  case "$*" in *pane_current_command*) printf '%s\n' "$FM_FAKE_TMUX_CURRENT_COMMAND"; exit 0 ;; esac
+fi
 exit 1
 SH
   chmod +x "$fakebin/tmux"

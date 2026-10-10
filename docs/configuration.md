@@ -263,6 +263,7 @@ A passing message is written atomically to `state/mail-inbox/<req>.json` and mov
 The poll reads only mail-axi's JSON summary (`{"accepted":[...],"rejected":n,"errors":[...]}`): when it accepted requests it prints `mail-request <req>` with a ` (+N)` suffix for the rest of the batch; otherwise it is silent.
 When nothing was accepted but stashes still wait in `state/mail-inbox/` (an ingest error, a restart mid-drain, or a missed wake), it prints the same line for the oldest pending request, repeated only when the pending set changes or after `FM_MAIL_PENDING_REWAKE` seconds (1800), tracked in `state/mail-poll.pending`.
 A missing tool or tenant, a nonzero exit, a timeout, unparseable output, or reported errors with nothing accepted print one `mail-intake-error <msg>` line, repeated only when the message changes or after a clean poll clears `state/mail-poll.error`.
+While that line is suppressed as a repeat, the stranded-stash reminder still fires, so requests already waiting in the inbox resurface even while mail-axi is failing.
 
 The request id is `YYYYMMDD-HHMM-<6 hex of sha256(internetMessageId)>`, and the stash schema is:
 

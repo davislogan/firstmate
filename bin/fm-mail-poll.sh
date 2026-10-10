@@ -19,7 +19,9 @@
 #   missing tool/config, nonzero exit, timeout, unparseable output, or reported
 #       errors with nothing accepted         -> one rate-limited diagnostic line
 #       "mail-intake-error <msg>", repeated only when the message changes or
-#       after a clean poll clears it
+#       after a clean poll clears it; when that line is suppressed as a
+#       repeat, the stranded-stash reminder above still fires, so waiting
+#       requests resurface while mail-axi itself is failing
 # Sender verification (Gate 2) is mail-axi's job and happens before any stash;
 # this script never reads message content. Request ids that are not safe slugs
 # or have no stash file are ignored.
@@ -58,7 +60,7 @@ emit_error_once() {
   msg=$(clean_line "$1")
   mkdir -p "$STATE" 2>/dev/null || true
   if [ -f "$ERROR_FILE" ] && [ "$(cat "$ERROR_FILE" 2>/dev/null)" = "$msg" ]; then
-    return 0
+    return 1
   fi
   printf '%s\n' "$msg" > "$ERROR_FILE" 2>/dev/null || true
   printf 'mail-intake-error %s\n' "$msg"
@@ -114,13 +116,19 @@ wake_pending() {
   fi
 }
 
+# fail_poll: report an early failure once, else remind about stranded stashes.
+fail_poll() {
+  emit_error_once "$1" || wake_pending
+  exit 0
+}
+
 NOW=${FM_MAIL_NOW_OVERRIDE:-$(date +%s)}
 case "$NOW" in ''|*[!0-9]*) NOW=$(date +%s) ;; esac
 
-[ -n "$FMM_TENANT" ] || { emit_error_once "missing FM_MAIL_TENANT"; exit 0; }
-command -v jq >/dev/null 2>&1 || { emit_error_once "missing jq"; exit 0; }
-command -v mail-axi >/dev/null 2>&1 || { emit_error_once "missing mail-axi"; exit 0; }
-mkdir -p "$INBOX" 2>/dev/null || { emit_error_once "cannot create inbox"; exit 0; }
+[ -n "$FMM_TENANT" ] || fail_poll "missing FM_MAIL_TENANT"
+command -v jq >/dev/null 2>&1 || fail_poll "missing jq"
+command -v mail-axi >/dev/null 2>&1 || fail_poll "missing mail-axi"
+mkdir -p "$INBOX" 2>/dev/null || fail_poll "cannot create inbox"
 
 limit=${FM_MAIL_POLL_TIMEOUT:-20}
 case "$limit" in ''|*[!0-9]*) limit=20 ;; esac
@@ -145,17 +153,14 @@ fi
 rc=$?
 
 if [ "$rc" -eq 124 ]; then
-  emit_error_once "mail-axi intake timed out after ${limit}s"
-  exit 0
+  fail_poll "mail-axi intake timed out after ${limit}s"
 fi
 if [ "$rc" -ne 0 ]; then
-  emit_error_once "mail-axi intake failed (exit $rc): $(head -n1 "$ERR" 2>/dev/null)"
-  exit 0
+  fail_poll "mail-axi intake failed (exit $rc): $(head -n1 "$ERR" 2>/dev/null)"
 fi
 
 if ! jq -e 'type == "object" and ((.accepted // []) | type) == "array"' "$OUT" >/dev/null 2>&1; then
-  emit_error_once "mail-axi intake returned unparseable output"
-  exit 0
+  fail_poll "mail-axi intake returned unparseable output"
 fi
 
 first=

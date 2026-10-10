@@ -165,7 +165,19 @@ test_poll_rewakes_for_stranded_stashes() {
   out=$(FM_MAIL_NOW_OVERRIDE=2980 run_poll "$home" "$fakebin")
   [ -z "$out" ] || fail "an empty inbox must be silent (got: $out)"
   assert_absent "$home/state/mail-poll.pending" "an empty inbox must clear the pending marker"
-  pass "fm-mail-poll re-wakes for stranded stashes, rate-limited by pending set and interval"
+  write_stash "$inbox/20261010-1100-cccccc.json" 20261010-1100-cccccc
+  out=$(FAKE_INTAKE_MODE=fail FM_MAIL_NOW_OVERRIDE=3000 run_poll "$home" "$fakebin")
+  assert_contains "$out" "mail-intake-error mail-axi intake failed" "a new intake failure must surface first"
+  out=$(FAKE_INTAKE_MODE=fail FM_MAIL_NOW_OVERRIDE=3060 run_poll "$home" "$fakebin")
+  [ "$out" = "mail-request 20261010-1100-cccccc" ] || fail "a repeated failure must still remind about stranded stashes (got: $out)"
+  out=$(FAKE_INTAKE_MODE=fail FM_MAIL_NOW_OVERRIDE=3120 run_poll "$home" "$fakebin")
+  [ -z "$out" ] || fail "the failure-path reminder must stay rate-limited (got: $out)"
+  out=$(FM_MAIL_TENANT='' FM_MAIL_NOW_OVERRIDE=3180 run_poll "$home" "$fakebin")
+  assert_contains "$out" "mail-intake-error missing FM_MAIL_TENANT" "a config failure must surface"
+  out=$(FM_MAIL_TENANT='' FM_MAIL_NOW_OVERRIDE=5000 run_poll "$home" "$fakebin")
+  [ "$out" = "mail-request 20261010-1100-cccccc" ] || fail "a repeated config failure must remind after the interval (got: $out)"
+  rm -f "$inbox/20261010-1100-cccccc.json"
+  pass "fm-mail-poll re-wakes for stranded stashes, rate-limited by pending set and interval, even while intake fails"
 }
 
 test_poll_error_rate_limited() {

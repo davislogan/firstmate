@@ -91,6 +91,7 @@ checkpoint_seconds=${FM_CODEX_WATCH_CHECKPOINT:-180}
 pi_ext="$STATE/fm-primary-pi-watch.ts"
 pi_turnend_ext="$FM_ROOT/.pi/extensions/fm-primary-turnend-guard.ts"
 x_mode_env="$CONFIG/x-mode.env"
+mail_mode_env="$CONFIG/mail-mode.env"
 
 shell_quote() {
   printf "'"
@@ -99,10 +100,14 @@ shell_quote() {
 }
 
 x_mode_env_sh=$(shell_quote "$x_mode_env")
+mail_mode_env_sh=$(shell_quote "$mail_mode_env")
 
 if [ "$X_MODE" -eq 0 ] && [ -f "$x_mode_env" ]; then
   X_MODE=1
 fi
+# Mail mode has no flag: its generated cadence file is the only signal.
+MAIL_MODE=0
+[ -f "$mail_mode_env" ] && MAIL_MODE=1
 
 render_snippet() {
   local line
@@ -111,6 +116,8 @@ render_snippet() {
     line=${line//__FM_PI_TURNEND_EXT__/$pi_turnend_ext}
     line=${line//__FM_X_MODE_ENV_SH__/$x_mode_env_sh}
     line=${line//__FM_X_MODE_ENV__/$x_mode_env}
+    line=${line//__FM_MAIL_MODE_ENV_SH__/$mail_mode_env_sh}
+    line=${line//__FM_MAIL_MODE_ENV__/$mail_mode_env}
     printf '%s\n' "$line"
   done < "$SNIPPET"
 }
@@ -129,8 +136,12 @@ repair_line() {
   if [ "$QUEUE_PENDING" -eq 1 ]; then
     prefix='After draining queued wakes, '
   fi
-  if [ "$X_MODE" -eq 1 ]; then
+  if [ "$X_MODE" -eq 1 ] && [ "$MAIL_MODE" -eq 1 ]; then
+    prefix="${prefix}source ${x_mode_env_sh} and ${mail_mode_env_sh} first, then "
+  elif [ "$X_MODE" -eq 1 ]; then
     prefix="${prefix}source ${x_mode_env_sh} first, then "
+  elif [ "$MAIL_MODE" -eq 1 ]; then
+    prefix="${prefix}source ${mail_mode_env_sh} first, then "
   fi
 
   case "$HARNESS" in
@@ -179,6 +190,9 @@ if [ "$X_MODE" -eq 1 ]; then
   printf '%s%s%s\n' '- X mode: active; source ' "$x_mode_env" ' before launching any watcher process so the 30s cadence is inherited.'
 else
   printf '%s\n' '- X mode: inactive; use the default watcher cadence.'
+fi
+if [ "$MAIL_MODE" -eq 1 ]; then
+  printf '%s%s%s\n' '- Mail mode: active; source ' "$mail_mode_env" ' before launching any watcher process so the 60s cadence is inherited (with X mode, the lower interval wins), and keep the watcher armed even with no fleet work.'
 fi
 printf '%s\n' '- After every handled wake, resume this emitted harness protocol instead of following a hardcoded background-arm recipe.'
 printf '\n'

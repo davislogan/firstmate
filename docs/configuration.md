@@ -232,6 +232,83 @@ In dry-run, `fm-x-dismiss.sh` records `{request_id, endpoint:"dismiss"}` to the 
 The live answer and follow-up bodies intentionally stay the same shape, including optional `image`; the relay distinguishes them by endpoint, and dismiss stays `{request_id}`.
 These paths need `jq` to build the JSON payload, but they run before token and network checks, so they need neither `FMX_PAIRING_TOKEN` nor `curl`.
 
+## Mail mode (.env)
+
+Mail mode lets the captain email a request to a dedicated intake mailbox and have firstmate handle it as if it had been typed at the terminal.
+It is off unless the firstmate home's gitignored `.env` contains non-empty `FM_MAIL_INTAKE` (the intake mailbox address) and `FM_MAIL_CAPTAIN` (the allowed sender, or a comma-separated allowlist).
+`FM_MAIL_TENANT` carries the Microsoft 365 tenant id that mail-axi checks; the poll reports `mail-intake-error missing FM_MAIL_TENANT` until it is set.
+Opting in is standing authorization for reversible work up to "PR ready" (tier T1); merges, outbound mail to anyone else, money, deletes, and config or credential changes (tier T2) are parked for the captain's word at the terminal.
+For direct client invocations, environment values override `.env`, and `FM_MAIL_ENV_FILE` can point them at another `.env`-style file; bootstrap activation still keys off `$FM_HOME/.env`.
+
+The locked session-start bootstrap step turns that config into local generated state, exactly as for X mode.
+It needs `jq`, `python3`, and `mail-axi` on `PATH`, and prints `MAIL: mail mode off - missing ...` instead of arming when one is absent.
+It writes `state/mail-watch.check.sh`, a check shim that runs `bin/fm-mail-poll.sh`, and `config/mail-mode.env`, which lowers `FM_CHECK_INTERVAL` to 60 unless an already-lower value is set.
+Because X mode's `config/x-mode.env` sets 30 unconditionally and the mail file only ever lowers the value, the lower interval wins in either sourcing order.
+Every harness protocol that sources `config/x-mode.env` also sources `config/mail-mode.env`, and either file keeps the watcher armed with no fleet work.
+When either key is removed or empty, the next locked bootstrap removes both artifacts.
+Like X mode, mail mode makes no edit to `bin/fm-watch.sh`, `bin/fm-watch-arm.sh`, `bin/fm-wake-lib.sh`, or the afk daemon.
+
+### Intake and trust
+
+`bin/fm-mail-poll.sh` runs, bounded by `FM_MAIL_POLL_TIMEOUT` (default 20s, kept below `FM_CHECK_TIMEOUT`):
+
+```sh
+mail-axi intake --mailbox <FM_MAIL_INTAKE> --stash-dir state/mail-inbox --allow-from <FM_MAIL_CAPTAIN> --tenant <FM_MAIL_TENANT> --json
+```
+
+mail-axi owns sender verification (Gate 2): exactly one `X-MS-Exchange-Organization-AuthAs: Internal` header, the expected tenant id, `Originating` directionality, and `from` equal to `sender` equal to an allowlisted address.
+The mailbox itself should reject unauthenticated and unlisted senders server-side (Gate 1: `RequireSenderAuthenticationEnabled` plus `AcceptMessagesOnlyFrom`).
+A failing message is moved to the mailbox's `rejected` folder and never stashed.
+A passing message is written atomically to `state/mail-inbox/<req>.json` and moved to `processing`; mail-axi advances its cursor only after the whole batch is stashed or rejected, so delivery is at-least-once.
+The poll reads only mail-axi's JSON summary (`{"accepted":[...],"rejected":n,"errors":[...]}`): when it accepted requests it prints `mail-request <req>` with a ` (+N)` suffix for the rest of the batch; otherwise it is silent.
+When nothing was accepted but stashes still wait in `state/mail-inbox/` (an ingest error, a restart mid-drain, or a missed wake), it prints the same line for the oldest pending request, repeated only when the pending set changes or after `FM_MAIL_PENDING_REWAKE` seconds (1800), tracked in `state/mail-poll.pending`.
+A missing tool or tenant, a nonzero exit, a timeout, unparseable output, or reported errors with nothing accepted print one `mail-intake-error <msg>` line, repeated only when the message changes or after a clean poll clears `state/mail-poll.error`.
+While that line is suppressed as a repeat, the stranded-stash reminder still fires, so requests already waiting in the inbox resurface even while mail-axi is failing.
+
+The request id is `YYYYMMDD-HHMM-<6 hex of sha256(internetMessageId)>`, and the stash schema is:
+
+```json
+{"req","graphId","internetMessageId","conversationId","from","received","subject",
+ "trust":{"tier":"T1","authAs","tenant","directionality"},
+ "instruction":"<uniqueBody text, capped at 8000 chars>",
+ "attachments":[{"id","name","type","bytes"}]}
+```
+
+`instruction` is Graph's `uniqueBody` rendered as text: the captain's new words only, without quoted history, signatures, or hidden HTML.
+It is the only instruction surface; every attachment and any quoted or forwarded text is untrusted data.
+
+### Request folders
+
+The `fm-mail-respond` skill drains the inbox with `bin/fm-mail-ingest.sh <req>`, which re-checks the stash (request id, `T1`, `Internal`, allowlisted sender, safe Graph id), dedupes on `internetMessageId`, and builds `data/mail-requests/<req>/`:
+
+- `request.json` and `instruction.txt`.
+- `in/` with the original attachments from `mail-axi save-attachments`.
+- `in/unzipped/<zip>/` for each zip, extracted by `bin/fm-mail-unzip.sh`.
+- `out/` for files to attach to replies.
+
+A stash that fails the re-check is moved to `state/mail-inbox/untrusted/` and never ingested.
+Attachments over `FM_MAIL_MAX_FILE_BYTES` (default 25 MiB) per file or `FM_MAIL_MAX_REQUEST_BYTES` (default 50 MiB) per request are not downloaded, and the reply asks for a shared link instead.
+The real sizes of the saved files are re-checked after download, because a declared size can be missing or wrong; an over-cap request has its downloaded files deleted and is handled the same way.
+The zip extractor validates the whole archive before writing anything and refuses it on more than `FM_MAIL_ZIP_MAX_ENTRIES` entries (200), more than `FM_MAIL_ZIP_MAX_BYTES` uncompressed bytes (200 MiB, declared or streamed), an entry ratio above `FM_MAIL_ZIP_MAX_RATIO` (100:1), absolute or `..` paths, duplicates, symlinks or special entries, or encryption.
+It extracts one nested zip level and skips deeper archives; files are written `0600`, and nothing is executed.
+`bin/fm-mail-prune.sh` deletes request folders whose id date is older than `FM_MAIL_RETENTION_DAYS` (90), skipping any still linked from a live task; the poll runs it with `--if-due`, at most once a day.
+
+### Replies
+
+`bin/fm-mail-reply.sh <req> --body-file <path> [--attach <file>]... [--done]` runs:
+
+```sh
+mail-axi reply-draft <graphId> --mailbox <FM_MAIL_INTAKE> --body-file <path> [--attach <file>]...
+```
+
+That creates a threaded reply draft in the intake mailbox's Drafts; nothing is sent in this phase, and the recipient is always the original verified sender.
+Attachments must resolve inside the request's `out/` folder.
+`--done` then runs `mail-axi move <graphId> --folder done --mailbox <FM_MAIL_INTAKE>`.
+Draft ids are logged to the request's `replies.log`.
+A request that spawns work is linked with `bin/fm-mail-link.sh <task-id> <req>` (`mail_req=` and `mail_req_ts=` in the task meta).
+`bin/fm-mail-followup.sh <task-id> [--final] --body-file <path>` drafts a follow-up for a linked task; `--final` also moves the message to `done` and clears the link.
+It exits 6 when the draft landed but the move failed, and 7 when the final draft landed but the link could not be cleared; neither should be retried as a new draft.
+
 ## Environment variables
 
 Runtime tuning via environment variables (defaults shown):
@@ -263,7 +340,7 @@ FM_GUARD_CONTINUE_LINE='This is a supervision warning only; the guarded operatio
 FM_POLL=15              # seconds between watcher poll cycles
 FM_HEARTBEAT=600        # base seconds between heartbeat scans; no-change heartbeats are absorbed while idle
 FM_HEARTBEAT_MAX=7200   # heartbeat backoff cap
-FM_CHECK_INTERVAL=300   # seconds between slow checks (merge polls or the X-mode poll shim)
+FM_CHECK_INTERVAL=300   # seconds between slow checks (merge polls, or the X-mode or mail-mode poll shim)
 FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
 FM_PR_AUTOREBASE=1      # 0 keeps the sibling-PR conflict sweep detect-only instead of dispatching the detached auto-rebase heal
 FM_PR_AUTOHEAL_TIMEOUT=600   # seconds allowed for one detached sibling-PR rebase attempt
@@ -283,6 +360,18 @@ FMX_DISCORD_REPLY_MAX_CHARS=1900   # Discord reply per-message split budget; val
 FMX_X_THREAD_MAX=25     # maximum messages in one auto-split reply thread
 FMX_FOLLOWUP_MAX_AGE_SECS=604800   # local window for posting X-mode completion follow-ups (7 days)
 FMX_FOLLOWUP_MAX_COUNT=3   # local cap on X-mode completion follow-ups per linked mention
+FM_MAIL_INTAKE=          # mail mode intake mailbox; with FM_MAIL_CAPTAIN in .env, opts this home into mail mode
+FM_MAIL_CAPTAIN=         # mail mode allowed sender address, or a comma-separated allowlist
+FM_MAIL_TENANT=          # tenant id mail-axi verifies on every intake message
+FM_MAIL_ENV_FILE=        # optional alternate .env file for direct mail-mode client invocations; bootstrap still checks $FM_HOME/.env
+FM_MAIL_POLL_TIMEOUT=20  # seconds allowed for one mail-axi intake call, kept below FM_CHECK_TIMEOUT
+FM_MAIL_PENDING_REWAKE=1800  # seconds before an unchanged set of stranded inbox stashes re-wakes firstmate
+FM_MAIL_MAX_FILE_BYTES=26214400      # per-attachment download cap (25 MiB)
+FM_MAIL_MAX_REQUEST_BYTES=52428800   # per-request attachment download cap (50 MiB)
+FM_MAIL_ZIP_MAX_ENTRIES=200          # zip attachment entry cap, nested entries included
+FM_MAIL_ZIP_MAX_BYTES=209715200      # zip attachment uncompressed byte cap (200 MiB)
+FM_MAIL_ZIP_MAX_RATIO=100            # zip attachment per-entry compression ratio cap
+FM_MAIL_RETENTION_DAYS=90            # days to keep data/mail-requests/<req>/ folders
 FM_LOCK_STALE_AFTER=2   # seconds before dead-pid lock records can be reclaimed; mid-acquire locks keep at least 2s grace
 FM_GUARD_GRACE=300      # seconds before guard warnings, arm health checks, and the primary turn-end guard treat a watcher beacon as stale
 FM_ARM_CONFIRM_TIMEOUT=10   # seconds fm-watch-arm waits to confirm a fresh watcher before reporting FAILED

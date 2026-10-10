@@ -17,9 +17,12 @@
 # FM_MAIL_CAPTAIN allowlist, and a Graph id of safe characters. Anything else is
 # moved to state/mail-inbox/untrusted/ and never ingested.
 #
-# Attachment caps (from the stash's declared sizes, checked before download):
-# FM_MAIL_MAX_FILE_BYTES (default 25 MiB) per file and FM_MAIL_MAX_REQUEST_BYTES
-# (default 50 MiB) per request. Over the cap, nothing is downloaded.
+# Attachment caps: FM_MAIL_MAX_FILE_BYTES (default 25 MiB) per file and
+# FM_MAIL_MAX_REQUEST_BYTES (default 50 MiB) per request. The stash's declared
+# sizes are checked before download (over the cap, nothing is downloaded); a
+# missing or non-numeric declared size counts as unknown, so the saved files'
+# real sizes are re-checked after download and an over-cap request has its
+# downloaded files deleted before reporting too-big.
 #
 # First output line and exit code:
 #   ok <req>             0  ingested; following lines name the paths and results
@@ -121,12 +124,16 @@ finish() {
   rm -f "$INBOX_FILE"
 }
 
-if [ "$largest" -gt "$MAX_FILE" ] || [ "$total" -gt "$MAX_REQ" ]; then
+too_big() {
   finish
-  echo "too-big $REQ: $n_att attachment(s), $total bytes (caps: $MAX_FILE per file, $MAX_REQ per request); none downloaded"
+  echo "too-big $REQ: $n_att attachment(s), $1 bytes (caps: $MAX_FILE per file, $MAX_REQ per request); $2"
   echo "dir: $DIR"
   echo "instruction: $DIR/instruction.txt"
   exit 3
+}
+
+if [ "$largest" -gt "$MAX_FILE" ] || [ "$total" -gt "$MAX_REQ" ]; then
+  too_big "$total" "none downloaded"
 fi
 
 unzip_lines=()
@@ -137,6 +144,18 @@ if [ "$n_att" -gt 0 ]; then
     exit 1
   fi
   rm -f "$DIR/.save.err"
+  saved_largest=0
+  saved_total=0
+  while IFS= read -r -d '' f; do
+    size=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+    case "$size" in ''|*[!0-9]*) size=$((MAX_FILE + 1)) ;; esac
+    [ "$size" -gt "$saved_largest" ] && saved_largest=$size
+    saved_total=$((saved_total + size))
+  done < <(find "$DIR/in" -path "$DIR/in/unzipped" -prune -o -type f -print0)
+  if [ "$saved_largest" -gt "$MAX_FILE" ] || [ "$saved_total" -gt "$MAX_REQ" ]; then
+    find "$DIR/in" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null
+    too_big "$saved_total" "downloaded files exceeded the caps and were deleted"
+  fi
   for zip in "$DIR"/in/*; do
     [ -f "$zip" ] || continue
     case "$(printf '%s' "$zip" | tr '[:upper:]' '[:lower:]')" in *.zip) ;; *) continue ;; esac

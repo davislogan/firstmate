@@ -169,7 +169,7 @@ try:
 except Refuse as e:
     print(json.dumps({"ok": False, "reason": str(e)}))
     sys.exit(3)
-except (zipfile.BadZipFile, zipfile.LargeZipFile, OSError, RuntimeError, EOFError) as e:
-    print(json.dumps({"ok": False, "reason": "extraction failed: %s" % type(e).__name__}))
+except (zipfile.BadZipFile, zipfile.LargeZipFile, OSError, RuntimeError, EOFError, NotImplementedError, ValueError) as e:
+    print(json.dumps({"ok": False, "reason": "extraction failed: %s: %s" % (type(e).__name__, str(e)[:200])}))
     sys.exit(3)
 PY

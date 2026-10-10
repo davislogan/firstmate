@@ -261,6 +261,7 @@ The mailbox itself should reject unauthenticated and unlisted senders server-sid
 A failing message is moved to the mailbox's `rejected` folder and never stashed.
 A passing message is written atomically to `state/mail-inbox/<req>.json` and moved to `processing`; mail-axi advances its cursor only after the whole batch is stashed or rejected, so delivery is at-least-once.
 The poll reads only mail-axi's JSON summary (`{"accepted":[...],"rejected":n,"errors":[...]}`): when it accepted requests it prints `mail-request <req>` with a ` (+N)` suffix for the rest of the batch; otherwise it is silent.
+When nothing was accepted but stashes still wait in `state/mail-inbox/` (an ingest error, a restart mid-drain, or a missed wake), it prints the same line for the oldest pending request, repeated only when the pending set changes or after `FM_MAIL_PENDING_REWAKE` seconds (1800), tracked in `state/mail-poll.pending`.
 A missing tool or tenant, a nonzero exit, a timeout, unparseable output, or reported errors with nothing accepted print one `mail-intake-error <msg>` line, repeated only when the message changes or after a clean poll clears `state/mail-poll.error`.
 
 The request id is `YYYYMMDD-HHMM-<6 hex of sha256(internetMessageId)>`, and the stash schema is:
@@ -286,6 +287,7 @@ The `fm-mail-respond` skill drains the inbox with `bin/fm-mail-ingest.sh <req>`,
 
 A stash that fails the re-check is moved to `state/mail-inbox/untrusted/` and never ingested.
 Attachments over `FM_MAIL_MAX_FILE_BYTES` (default 25 MiB) per file or `FM_MAIL_MAX_REQUEST_BYTES` (default 50 MiB) per request are not downloaded, and the reply asks for a shared link instead.
+The real sizes of the saved files are re-checked after download, because a declared size can be missing or wrong; an over-cap request has its downloaded files deleted and is handled the same way.
 The zip extractor validates the whole archive before writing anything and refuses it on more than `FM_MAIL_ZIP_MAX_ENTRIES` entries (200), more than `FM_MAIL_ZIP_MAX_BYTES` uncompressed bytes (200 MiB, declared or streamed), an entry ratio above `FM_MAIL_ZIP_MAX_RATIO` (100:1), absolute or `..` paths, duplicates, symlinks or special entries, or encryption.
 It extracts one nested zip level and skips deeper archives; files are written `0600`, and nothing is executed.
 `bin/fm-mail-prune.sh` deletes request folders whose id date is older than `FM_MAIL_RETENTION_DAYS` (90), skipping any still linked from a live task; the poll runs it with `--if-due`, at most once a day.
@@ -304,6 +306,7 @@ Attachments must resolve inside the request's `out/` folder.
 Draft ids are logged to the request's `replies.log`.
 A request that spawns work is linked with `bin/fm-mail-link.sh <task-id> <req>` (`mail_req=` and `mail_req_ts=` in the task meta).
 `bin/fm-mail-followup.sh <task-id> [--final] --body-file <path>` drafts a follow-up for a linked task; `--final` also moves the message to `done` and clears the link.
+It exits 6 when the draft landed but the move failed, and 7 when the final draft landed but the link could not be cleared; neither should be retried as a new draft.
 
 ## Environment variables
 
@@ -361,6 +364,7 @@ FM_MAIL_CAPTAIN=         # mail mode allowed sender address, or a comma-separate
 FM_MAIL_TENANT=          # tenant id mail-axi verifies on every intake message
 FM_MAIL_ENV_FILE=        # optional alternate .env file for direct mail-mode client invocations; bootstrap still checks $FM_HOME/.env
 FM_MAIL_POLL_TIMEOUT=20  # seconds allowed for one mail-axi intake call, kept below FM_CHECK_TIMEOUT
+FM_MAIL_PENDING_REWAKE=1800  # seconds before an unchanged set of stranded inbox stashes re-wakes firstmate
 FM_MAIL_MAX_FILE_BYTES=26214400      # per-attachment download cap (25 MiB)
 FM_MAIL_MAX_REQUEST_BYTES=52428800   # per-request attachment download cap (50 MiB)
 FM_MAIL_ZIP_MAX_ENTRIES=200          # zip attachment entry cap, nested entries included

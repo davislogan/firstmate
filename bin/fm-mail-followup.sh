@@ -19,6 +19,9 @@
 #     even when only that move failed (exit 6, retry the move with
 #     `fm-mail-reply.sh <req> --done`), so a final reply is never drafted twice.
 #     A failed draft leaves the link in place for a retry (exit 1).
+#     Exit 7 means the final draft landed but the link could not be cleared
+#     from the task meta: do NOT retry the draft; remove the mail_req= and
+#     mail_req_ts= lines from state/<id>.meta instead.
 #     Not linked: nothing to do, exit 0.
 set -u
 
@@ -34,7 +37,7 @@ usage() {
 }
 
 case "${1:-}" in
-  -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 
 MODE=post
@@ -81,7 +84,7 @@ rc=$?
 case "$rc" in
   0|6)
     if [ "$FINAL" -eq 1 ]; then
-      fmm_meta_link_clear "$META" || { echo "fm-mail-followup: drafted but could not clear the link in state/$ID.meta" >&2; exit 1; }
+      fmm_meta_link_clear "$META" || { echo "fm-mail-followup: drafted but could not clear the link in state/$ID.meta; do not retry the draft" >&2; exit 7; }
     fi
     exit "$rc"
     ;;

@@ -12,6 +12,10 @@
 #   mail-axi accepted one or more requests   -> mail-axi already stashed each as
 #       state/mail-inbox/<req>.json; print one line "mail-request <req>" with a
 #       " (+N)" suffix when N more were accepted in the same batch
+#   nothing accepted, but stashes still wait in state/mail-inbox/ (an ingest
+#       error, a restart mid-drain, a missed wake) -> the same "mail-request
+#       <oldest> (+N)" line, repeated only when the pending set changes or
+#       FM_MAIL_PENDING_REWAKE seconds (default 1800) have passed
 #   missing tool/config, nonzero exit, timeout, unparseable output, or reported
 #       errors with nothing accepted         -> one rate-limited diagnostic line
 #       "mail-intake-error <msg>", repeated only when the message changes or
@@ -24,7 +28,8 @@
 # Config (home .env, FM_MAIL_ENV_FILE, or env): FM_MAIL_INTAKE, FM_MAIL_CAPTAIN
 # (comma-separated allowlist passed to --allow-from), FM_MAIL_TENANT (required
 # once mail mode is on). FM_MAIL_POLL_TIMEOUT (default 20s, kept below
-# FM_CHECK_TIMEOUT) bounds the mail-axi call.
+# FM_CHECK_TIMEOUT) bounds the mail-axi call. FM_MAIL_PENDING_REWAKE (default
+# 1800s) rate-limits the reminder wake for stashes left in the inbox.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,6 +45,7 @@ fmm_enabled || exit 0
 "$SCRIPT_DIR/fm-mail-prune.sh" --if-due >/dev/null 2>&1 || true
 
 ERROR_FILE="$STATE/mail-poll.error"
+PENDING_FILE="$STATE/mail-poll.pending"
 INBOX="$STATE/mail-inbox"
 
 # Error text can echo mail-axi stderr, so keep it to one printable bounded line.
@@ -61,6 +67,55 @@ emit_error_once() {
 clear_error() {
   rm -f "$ERROR_FILE" 2>/dev/null || true
 }
+
+pending_list() {
+  local f req
+  for f in "$INBOX"/*.json; do
+    [ -f "$f" ] || continue
+    req=$(basename "$f" .json)
+    fmm_safe_slug "$req" && printf '%s\n' "$req"
+  done | LC_ALL=C sort
+}
+
+# record_pending: remember the current pending set as already woken for.
+record_pending() {
+  local list
+  list=$(pending_list)
+  if [ -z "$list" ]; then
+    rm -f "$PENDING_FILE" 2>/dev/null || true
+    return 0
+  fi
+  printf '%s\n%s\n' "$NOW" "$list" > "$PENDING_FILE" 2>/dev/null || true
+}
+
+# wake_pending: print a reminder wake for stashes still in the inbox, at most
+# once per distinct pending set per FM_MAIL_PENDING_REWAKE seconds.
+wake_pending() {
+  local list count first last rewake
+  list=$(pending_list)
+  if [ -z "$list" ]; then
+    rm -f "$PENDING_FILE" 2>/dev/null || true
+    return 1
+  fi
+  rewake=${FM_MAIL_PENDING_REWAKE:-1800}
+  case "$rewake" in ''|*[!0-9]*) rewake=1800 ;; esac
+  if [ -f "$PENDING_FILE" ] && [ "$(tail -n +2 "$PENDING_FILE" 2>/dev/null)" = "$list" ]; then
+    last=$(head -n1 "$PENDING_FILE" 2>/dev/null)
+    case "$last" in ''|*[!0-9]*) last=0 ;; esac
+    [ $((NOW - last)) -ge "$rewake" ] || return 1
+  fi
+  printf '%s\n%s\n' "$NOW" "$list" > "$PENDING_FILE" 2>/dev/null || true
+  first=$(printf '%s\n' "$list" | head -n1)
+  count=$(printf '%s\n' "$list" | wc -l | tr -d ' ')
+  if [ "$count" -gt 1 ]; then
+    printf 'mail-request %s (+%s)\n' "$first" "$((count - 1))"
+  else
+    printf 'mail-request %s\n' "$first"
+  fi
+}
+
+NOW=${FM_MAIL_NOW_OVERRIDE:-$(date +%s)}
+case "$NOW" in ''|*[!0-9]*) NOW=$(date +%s) ;; esac
 
 [ -n "$FMM_TENANT" ] || { emit_error_once "missing FM_MAIL_TENANT"; exit 0; }
 command -v jq >/dev/null 2>&1 || { emit_error_once "missing jq"; exit 0; }
@@ -114,6 +169,7 @@ done < <(jq -r '(.accepted // [])[] | strings' "$OUT" 2>/dev/null)
 
 if [ "$count" -gt 0 ]; then
   clear_error
+  record_pending
   if [ "$count" -gt 1 ]; then
     printf 'mail-request %s (+%s)\n' "$first" "$((count - 1))"
   else
@@ -121,6 +177,8 @@ if [ "$count" -gt 0 ]; then
   fi
   exit 0
 fi
+
+wake_pending && exit 0
 
 nerr=$(jq -r '(.errors // []) | length' "$OUT" 2>/dev/null || echo 0)
 case "$nerr" in ''|*[!0-9]*) nerr=0 ;; esac

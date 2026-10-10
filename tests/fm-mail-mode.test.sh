@@ -141,6 +141,33 @@ test_poll_ignores_unsafe_or_unstashed_ids() {
   pass "fm-mail-poll ignores unsafe ids and ids with no stash file"
 }
 
+test_poll_rewakes_for_stranded_stashes() {
+  local home fakebin out inbox
+  home=$(make_home poll-pending); fakebin=$(make_fake_mail_axi "$home")
+  inbox="$home/state/mail-inbox"; mkdir -p "$inbox/untrusted"
+  write_stash "$inbox/untrusted/20261010-0900-eeeeee.json" 20261010-0900-eeeeee
+  out=$(FM_MAIL_NOW_OVERRIDE=1000 run_poll "$home" "$fakebin")
+  [ -z "$out" ] || fail "quarantined stashes must not wake (got: $out)"
+  write_stash "$inbox/20261010-1001-bbbbbb.json" 20261010-1001-bbbbbb
+  write_stash "$inbox/20261010-1000-aaaaaa.json" 20261010-1000-aaaaaa
+  out=$(FM_MAIL_NOW_OVERRIDE=1000 run_poll "$home" "$fakebin")
+  [ "$out" = "mail-request 20261010-1000-aaaaaa (+1)" ] || fail "stranded stashes must wake for the oldest (got: $out)"
+  out=$(FM_MAIL_NOW_OVERRIDE=1060 run_poll "$home" "$fakebin")
+  [ -z "$out" ] || fail "an unchanged pending set must not re-wake every poll (got: $out)"
+  rm -f "$inbox/20261010-1000-aaaaaa.json"
+  out=$(FM_MAIL_NOW_OVERRIDE=1120 run_poll "$home" "$fakebin")
+  [ "$out" = "mail-request 20261010-1001-bbbbbb" ] || fail "a changed pending set must re-wake (got: $out)"
+  out=$(FM_MAIL_NOW_OVERRIDE=2000 run_poll "$home" "$fakebin")
+  [ -z "$out" ] || fail "the reminder must wait out the rewake interval (got: $out)"
+  out=$(FM_MAIL_NOW_OVERRIDE=2920 run_poll "$home" "$fakebin")
+  [ "$out" = "mail-request 20261010-1001-bbbbbb" ] || fail "the reminder must repeat after the rewake interval (got: $out)"
+  rm -f "$inbox/20261010-1001-bbbbbb.json"
+  out=$(FM_MAIL_NOW_OVERRIDE=2980 run_poll "$home" "$fakebin")
+  [ -z "$out" ] || fail "an empty inbox must be silent (got: $out)"
+  assert_absent "$home/state/mail-poll.pending" "an empty inbox must clear the pending marker"
+  pass "fm-mail-poll re-wakes for stranded stashes, rate-limited by pending set and interval"
+}
+
 test_poll_error_rate_limited() {
   local home fakebin out
   home=$(make_home poll-err); fakebin=$(make_fake_mail_axi "$home")
@@ -337,6 +364,28 @@ test_ingest_ok_duplicate_untrusted_toobig() {
   pass "fm-mail-ingest ingests, unzips, dedupes, quarantines, and caps attachments"
 }
 
+test_ingest_rechecks_saved_sizes() {
+  local home fakebin out req=20261010-1420-eeeeee dir att
+  home=$(make_home ingest-size); fakebin=$(make_fake_mail_axi "$home")
+  mkdir -p "$home/state/mail-inbox"
+  write_stash "$home/state/mail-inbox/$req.json" "$req" '.attachments = [{"id":"a1","name":"big.bin"},{"id":"a2","name":"x.txt","bytes":"lots"}]'
+  att="$home/att"; mkdir -p "$att"
+  head -c 2000 /dev/zero > "$att/big.bin"
+  printf 'x' > "$att/x.txt"
+  out=$(FM_MAIL_MAX_FILE_BYTES=1000 FAKE_ATTACH_SRC="$att" ingest "$home" "$fakebin" "$req"); expect_code 3 $? "saved over-cap exit"
+  dir="$home/data/mail-requests/$req"
+  assert_contains "$out" "too-big $req" "over-cap saved files must be reported too-big"
+  assert_contains "$out" "deleted" "the report must say the downloads were deleted"
+  [ -z "$(find "$dir/in" -mindepth 1 2>/dev/null)" ] || fail "over-cap downloads must be deleted"
+  assert_present "$dir/.ingested" "a too-big request is still ingested"
+  assert_absent "$home/state/mail-inbox/$req.json" "a too-big request drains the inbox"
+  req=20261010-1421-ffffff
+  write_stash "$home/state/mail-inbox/$req.json" "$req" '.attachments = [{"id":"a1","name":"big.bin","bytes":10},{"id":"a2","name":"x.txt","bytes":1}]'
+  out=$(FM_MAIL_MAX_FILE_BYTES=5000 FM_MAIL_MAX_REQUEST_BYTES=1500 FAKE_ATTACH_SRC="$att" ingest "$home" "$fakebin" "$req"); expect_code 3 $? "saved over request cap exit"
+  assert_contains "$out" "too-big $req" "under-declared files over the request cap must be too-big"
+  pass "fm-mail-ingest re-checks real attachment sizes after download"
+}
+
 # --- reply, link, followup -------------------------------------------------
 
 seed_request() {
@@ -396,6 +445,13 @@ test_link_and_followup() {
   out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-mail-followup.sh" t1 --final --body-file "$home/body.txt" 2>&1)
   expect_code 0 $? "unlinked followup is a no-op"
   assert_contains "$out" "not mail-linked" "an unlinked follow-up must say so"
+  if [ "$(id -u)" != 0 ]; then
+    FM_HOME="$home" "$ROOT/bin/fm-mail-link.sh" t1 "$req" >/dev/null
+    chmod 555 "$home/state"
+    PATH="$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-mail-followup.sh" t1 --final --body-file "$home/body.txt" >/dev/null 2>&1
+    expect_code 7 $? "final drafted but link not cleared"
+    chmod 755 "$home/state"
+  fi
   pass "fm-mail-link and fm-mail-followup record, draft, and clear the link"
 }
 
@@ -426,6 +482,7 @@ test_poll_inert_without_config
 test_poll_empty_is_silent
 test_poll_wake_line
 test_poll_ignores_unsafe_or_unstashed_ids
+test_poll_rewakes_for_stranded_stashes
 test_poll_error_rate_limited
 test_poll_timeout
 test_bootstrap_opt_in_and_out
@@ -434,6 +491,7 @@ test_supervision_instructions_source_mail_cadence
 test_unzip_extracts_and_nests_one_level
 test_unzip_limits
 test_ingest_ok_duplicate_untrusted_toobig
+test_ingest_rechecks_saved_sizes
 test_reply_drafts_and_moves
 test_link_and_followup
 test_prune_retention

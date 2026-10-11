@@ -310,7 +310,9 @@ mail-axi reply-send <graphId> --mailbox <FM_MAIL_INTAKE> --body-file <path> --cc
 ```
 
 instead, so the reply is sent from the intake mailbox.
-Recipients are restricted to exactly the addresses in `FM_MAIL_CAPTAIN` (the comma list of allowed senders), never anyone else, and the captain (the first address) is cc'd on every message; mail-axi enforces the allowlist in code, and the tenant enforces "never outside the org" server side.
+The recipient allowlist and the captain cc are enforced by mail-axi in code: `--cc-captain` cc's the captain on every message, and `FM_MAIL_CAPTAIN` is also passed as `--allow-from`, so a reply never goes to anyone mail-axi does not allow.
+The tenant enforces "never outside the org" server side.
+If a send fails, mail-axi's error is forwarded; a failed send may still have gone out, so check `replies.log` and the intake mailbox's Sent Items before retrying.
 The tenant admin script (`phase2-send`) must be run first to grant the intake mailbox send rights, or sends fail.
 `--send` insists on sending and exits 2 unless `FM_MAIL_SEND=1`; `--draft` forces a draft even when sends are opted in.
 Email confirmation or approval of T2 actions is not implemented; those stay terminal-only.
@@ -374,6 +376,7 @@ FMX_FOLLOWUP_MAX_AGE_SECS=604800   # local window for posting X-mode completion 
 FMX_FOLLOWUP_MAX_COUNT=3   # local cap on X-mode completion follow-ups per linked mention
 FM_MAIL_INTAKE=          # mail mode intake mailbox; with FM_MAIL_CAPTAIN in .env, opts this home into mail mode
 FM_MAIL_CAPTAIN=         # mail mode allowed sender address, or a comma-separated allowlist
+FM_MAIL_SEND=            # optional; 1 = really send mail-mode replies instead of leaving drafts
 FM_MAIL_TENANT=          # tenant id mail-axi verifies on every intake message
 FM_MAIL_ENV_FILE=        # optional alternate .env file for direct mail-mode client invocations; bootstrap still checks $FM_HOME/.env
 FM_MAIL_POLL_TIMEOUT=20  # seconds allowed for one mail-axi intake call, kept below FM_CHECK_TIMEOUT

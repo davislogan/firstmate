@@ -18,7 +18,8 @@
 #     original message to "done" and clears the link after the draft lands,
 #     even when only that move failed (exit 6, retry the move with
 #     `fm-mail-reply.sh <req> --done`), so a final reply is never drafted twice.
-#     A failed draft leaves the link in place for a retry (exit 1).
+#     A failed draft or send leaves the link in place (exit 1); a failed send
+#     may still have gone out, so check replies.log and Sent Items before retrying.
 #     Exit 2 means fm-mail-reply.sh refused the request (bad input, mail mode
 #     off, or --send without FM_MAIL_SEND=1); nothing was drafted or sent.
 #     Exit 7 means the final draft landed but the link could not be cleared
@@ -41,7 +42,7 @@ usage() {
 }
 
 case "${1:-}" in
-  -h|--help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 
 MODE=post
@@ -98,7 +99,7 @@ case "$rc" in
     exit 2
     ;;
   *)
-    echo "fm-mail-followup: draft failed for $ID; left the link in place to retry" >&2
+    echo "fm-mail-followup: reply failed for $ID; link left in place. A failed send may still have gone out: check data/mail-requests/$REQ/replies.log and the intake mailbox's Sent Items before retrying" >&2
     exit 1
     ;;
 esac

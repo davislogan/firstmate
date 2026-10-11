@@ -12,10 +12,10 @@
 #   taken from mail content.
 #   Send mode: with FM_MAIL_SEND=1 in .env (or the environment) the reply is SENT
 #   instead, via `mail-axi reply-send <graphId> --mailbox ... --body-file <path>
-#   --cc-captain --allow-from <FM_MAIL_CAPTAIN> [--attach <file>]...`. mail-axi enforces the recipient allowlist
-#   (exactly the FM_MAIL_CAPTAIN addresses, the first address cc'd on every
-#   message) in code; the tenant admin script (phase2-send) must have been run
-#   first. --send requests send mode explicitly and is refused unless
+#   --cc-captain --allow-from <FM_MAIL_CAPTAIN> [--attach <file>]...`. mail-axi
+#   enforces the recipient allowlist and the captain cc in code (FM_MAIL_CAPTAIN
+#   is passed as --allow-from); the tenant admin script (phase2-send) must have
+#   been run first. --send requests send mode explicitly and is refused unless
 #   FM_MAIL_SEND=1; --draft forces a draft even when send is opted in.
 #   Each draft/sent id is appended to data/mail-requests/<req>/replies.log and printed.
 #   --attach paths must resolve inside data/mail-requests/<req>/out/, so a reply
@@ -102,7 +102,18 @@ if [ -n "$BODY" ]; then
       *) echo "fm-mail-reply: attachments must live under $DIR/out/: $f" >&2; exit 2 ;;
     esac
   done
-  draft=$(mail-axi "${args[@]}" 2>/dev/null) || { echo "fm-mail-reply: mail-axi ${args[0]} failed for $REQ" >&2; exit 1; }
+  errf=$(mktemp "${TMPDIR:-/tmp}/fm-mail-reply.XXXXXX") || { echo "fm-mail-reply: mktemp failed" >&2; exit 1; }
+  if ! draft=$(mail-axi "${args[@]}" 2>"$errf"); then
+    err=$(tr -d '\r' < "$errf" | grep -v '^[[:space:]]*$' | tail -n3 | tr -cd '[:print:]\n' | cut -c1-300)
+    rm -f "$errf"
+    echo "fm-mail-reply: mail-axi ${args[0]} failed for $REQ${err:+: }" >&2
+    [ -n "$err" ] && printf '  %s\n' "$err" >&2
+    if [ "$MODE" = send ]; then
+      echo "fm-mail-reply: the message may already have gone out; check $DIR/replies.log and the intake mailbox's Sent Items before any retry" >&2
+    fi
+    exit 1
+  fi
+  rm -f "$errf"
   draft=$(printf '%s' "$draft" | tr -d '\r' | tail -n1 | tr -cd '[:print:]' | cut -c1-300)
   printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MODE" "$draft" >> "$DIR/replies.log" 2>/dev/null || true
   printf '%s %s\n' "$MODE" "$draft"

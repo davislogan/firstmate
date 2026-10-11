@@ -940,7 +940,7 @@ The one fact that must survive here because it fires on a generic terminal wake,
 
 ## 15. Mail mode
 
-Mail mode lets the captain email requests to a dedicated intake mailbox; an authenticated request is handled as if typed at the terminal, and results come back as draft replies in the same thread.
+Mail mode lets the captain email requests to a dedicated intake mailbox; an authenticated request is handled as if typed at the terminal, and results come back as replies in the same thread (drafts by default, sent when `FM_MAIL_SEND=1`).
 It is **inert until opted in**: activation is `.env` presence of `FM_MAIL_INTAKE` (the mailbox) and `FM_MAIL_CAPTAIN` (the allowed sender), plus `FM_MAIL_TENANT`.
 Bootstrap then generates the poll shim and `config/mail-mode.env` (60s cadence; with X mode on, the lower interval wins), and the watcher stays armed even with no fleet work, exactly as X mode does (section 14).
 Mechanism, the mail-axi contract, limits, and retention live in `docs/configuration.md` "Mail mode (.env)".

@@ -306,7 +306,7 @@ Drafts are the default.
 Real sends are opt-in: set `FM_MAIL_SEND=1` in `.env` (or the environment) and the same helpers run
 
 ```sh
-mail-axi reply-send <graphId> --mailbox <FM_MAIL_INTAKE> --body-file <path> --cc-captain [--attach <file>]...
+mail-axi reply-send <graphId> --mailbox <FM_MAIL_INTAKE> --body-file <path> --cc-captain --allow-from <FM_MAIL_CAPTAIN> [--attach <file>]...
 ```
 
 instead, so the reply is sent from the intake mailbox.

@@ -12,7 +12,7 @@
 #   taken from mail content.
 #   Send mode: with FM_MAIL_SEND=1 in .env (or the environment) the reply is SENT
 #   instead, via `mail-axi reply-send <graphId> --mailbox ... --body-file <path>
-#   --cc-captain [--attach <file>]...`. mail-axi enforces the recipient allowlist
+#   --cc-captain --allow-from <FM_MAIL_CAPTAIN> [--attach <file>]...`. mail-axi enforces the recipient allowlist
 #   (exactly the FM_MAIL_CAPTAIN addresses, the first address cc'd on every
 #   message) in code; the tenant admin script (phase2-send) must have been run
 #   first. --send requests send mode explicitly and is refused unless
@@ -87,7 +87,7 @@ if [ -n "$BODY" ]; then
   fi
   out_real=$(cd "$DIR/out" 2>/dev/null && pwd -P) || { echo "fm-mail-reply: missing $DIR/out" >&2; exit 2; }
   if [ "$MODE" = send ]; then
-    args=(reply-send "$GRAPH_ID" --mailbox "$FMM_INTAKE" --body-file "$BODY" --cc-captain)
+    args=(reply-send "$GRAPH_ID" --mailbox "$FMM_INTAKE" --body-file "$BODY" --cc-captain --allow-from "$FMM_CAPTAIN")
   else
     args=(reply-draft "$GRAPH_ID" --mailbox "$FMM_INTAKE" --body-file "$BODY")
   fi

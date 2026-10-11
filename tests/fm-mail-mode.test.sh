@@ -446,7 +446,7 @@ test_reply_send_mode() {
   out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_MAIL_SEND=1 FAKE_MAIL_LOG="$home/mail.log" \
     "$ROOT/bin/fm-mail-reply.sh" "$req" --body-file "$home/body.txt" --attach "$dir/out/quote.csv" --done); expect_code 0 $? "send exit"
   assert_contains "$out" "send sent-456" "send must print the sent id"
-  assert_grep "reply-send AAkALgAA-graph_id= --mailbox firstmate@example.com --body-file $home/body.txt --cc-captain --attach" "$home/mail.log" "send must call reply-send with --cc-captain"
+  assert_grep "reply-send AAkALgAA-graph_id= --mailbox firstmate@example.com --body-file $home/body.txt --cc-captain --allow-from captain@example.com --attach" "$home/mail.log" "send must call reply-send with --cc-captain"
   assert_grep "send sent-456" "$dir/replies.log" "the sent id must be logged"
   : > "$home/mail.log"
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_MAIL_SEND=1 FAKE_MAIL_LOG="$home/mail.log" "$ROOT/bin/fm-mail-reply.sh" "$req" --body-file "$home/body.txt" --draft >/dev/null

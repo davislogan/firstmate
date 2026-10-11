@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Link a spawned task to the mail-mode request that triggered it, so firstmate
-# writes the final draft reply with results when the task lands.
+# writes the final reply (draft or sent) with results when the task lands.
 #
 # Usage: fm-mail-link.sh <task-id> <req>
 #   Records in state/<task-id>.meta (replacing any prior mail link, preserving

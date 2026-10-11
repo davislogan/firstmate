@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Write a follow-up draft reply for a mail-mode-linked task.
+# Write a follow-up reply (draft, or sent with FM_MAIL_SEND=1) for a mail-mode-linked task.
 #
 # A mail request that spawned real work is linked to its task by
 # bin/fm-mail-link.sh (mail_req= in state/<id>.meta). On a milestone worth
@@ -12,17 +12,22 @@
 #     exit 1, silent        -> not linked
 #
 # Draft:
-#   fm-mail-followup.sh <task-id> [--final] [--attach <file>]... --body-file <path>
+#   fm-mail-followup.sh <task-id> [--final] [--send|--draft] [--attach <file>]... --body-file <path>
 #     Calls bin/fm-mail-reply.sh <req> (attachments must sit in the request's
 #     out/ folder). A non-final draft keeps the link. --final also moves the
 #     original message to "done" and clears the link after the draft lands,
 #     even when only that move failed (exit 6, retry the move with
 #     `fm-mail-reply.sh <req> --done`), so a final reply is never drafted twice.
-#     A failed draft leaves the link in place for a retry (exit 1).
+#     A failed draft or send leaves the link in place (exit 1); a failed send
+#     may still have gone out, so check replies.log and Sent Items before retrying.
+#     Exit 2 means fm-mail-reply.sh refused the request (bad input, mail mode
+#     off, or --send without FM_MAIL_SEND=1); nothing was drafted or sent.
 #     Exit 7 means the final draft landed but the link could not be cleared
 #     from the task meta: do NOT retry the draft; remove the mail_req= and
 #     mail_req_ts= lines from state/<id>.meta instead.
 #     Not linked: nothing to do, exit 0.
+#   --send / --draft are passed through to fm-mail-reply.sh (send needs
+#   FM_MAIL_SEND=1, which also makes send the default; --draft forces a draft).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,11 +38,11 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-mail-lib.sh"
 
 usage() {
-  echo "usage: fm-mail-followup.sh --check <task-id> | <task-id> [--final] [--attach <file>]... --body-file <path>" >&2
+  echo "usage: fm-mail-followup.sh --check <task-id> | <task-id> [--final] [--send|--draft] [--attach <file>]... --body-file <path>" >&2
 }
 
 case "${1:-}" in
-  -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 
 MODE=post
@@ -55,6 +60,7 @@ else
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --final) FINAL=1; shift ;;
+      --send|--draft) REPLY_ARGS+=("$1"); shift ;;
       --body-file|--attach)
         [ "$#" -ge 2 ] || { usage; exit 2; }
         [ "$1" = --body-file ] && have_body=1
@@ -88,8 +94,12 @@ case "$rc" in
     fi
     exit "$rc"
     ;;
+  2)
+    echo "fm-mail-followup: reply refused for $ID (see above); nothing was drafted or sent, link left in place" >&2
+    exit 2
+    ;;
   *)
-    echo "fm-mail-followup: draft failed for $ID; left the link in place to retry" >&2
+    echo "fm-mail-followup: reply failed for $ID; link left in place. A failed send may still have gone out: check data/mail-requests/$REQ/replies.log and the intake mailbox's Sent Items before retrying" >&2
     exit 1
     ;;
 esac

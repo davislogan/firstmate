@@ -74,7 +74,7 @@ If you have changed away from the firstmate home in an interactive shell, invoke
 | `fm-mail-poll.sh`        | Do one bounded `mail-axi intake` poll; silent when mail mode is off or nothing was accepted, prints `mail-request <req> (+N)` when requests were stashed, a rate-limited `mail-intake-error <msg>` on failure, and runs the daily retention prune |
 | `fm-mail-ingest.sh`      | Verify one stashed mail request and move it into `data/mail-requests/<req>/` (request, instruction, attachments, safe unzip); prints `ok`, `duplicate`, `too-big`, `untrusted`, or `error` first |
 | `fm-mail-unzip.sh`       | Validate-then-extract a zip attachment with entry, size, ratio, path, symlink, and one-level nesting limits; refuses atomically |
-| `fm-mail-reply.sh`       | Create a threaded draft reply for a mail request via `mail-axi reply-draft` (body by file, attachments only from the request `out/`), and/or move the message to `done` |
+| `fm-mail-reply.sh`       | Create a threaded reply for a mail request - a draft via `mail-axi reply-draft`, or sent via `mail-axi reply-send` when `FM_MAIL_SEND=1` (body by file, attachments only from the request `out/`), and/or move the message to `done` |
 | `fm-mail-link.sh`        | Link a spawned task to its mail request by recording `mail_req=` and `mail_req_ts=` in `state/<id>.meta` |
-| `fm-mail-followup.sh`    | Detect a mail-linked task and draft its follow-up reply; `--final` also moves the message to `done` and clears the link |
+| `fm-mail-followup.sh`    | Detect a mail-linked task and draft (or send) its follow-up reply; `--final` also moves the message to `done` and clears the link |
 | `fm-mail-prune.sh`       | Delete mail request folders past the 90-day retention (`FM_MAIL_RETENTION_DAYS`), keyed on the request id date, skipping live-linked ones; `--if-due` runs at most daily |

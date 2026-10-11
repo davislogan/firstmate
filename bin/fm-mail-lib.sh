@@ -11,6 +11,7 @@
 #   fmm_load_config            - resolve FMM_INTAKE, FMM_CAPTAIN, FMM_TENANT
 #                                (an explicit environment value wins over .env)
 #   fmm_enabled                - true when FMM_INTAKE and FMM_CAPTAIN are set
+#   fmm_send_enabled           - true when FM_MAIL_SEND=1 (real sends opted in)
 #   fmm_safe_slug <value>      - true when value is a safe filename slug
 #   fmm_request_dir <req>      - print data/mail-requests/<req>
 #   fmm_meta_link_set <meta> <req> <epoch> - (re)write the mail_req link
@@ -27,6 +28,11 @@ fmm_load_config() {
   if [ -n "${FM_MAIL_CAPTAIN+x}" ]; then FMM_CAPTAIN=${FM_MAIL_CAPTAIN-}; else FMM_CAPTAIN=$(fmx_env_get FM_MAIL_CAPTAIN "$env_file"); fi
   # shellcheck disable=SC2034 # FMM_TENANT is read by callers (fm-mail-poll.sh) after sourcing.
   if [ -n "${FM_MAIL_TENANT+x}" ]; then FMM_TENANT=${FM_MAIL_TENANT-}; else FMM_TENANT=$(fmx_env_get FM_MAIL_TENANT "$env_file"); fi
+  if [ -n "${FM_MAIL_SEND+x}" ]; then FMM_SEND=${FM_MAIL_SEND-}; else FMM_SEND=$(fmx_env_get FM_MAIL_SEND "$env_file"); fi
+}
+
+fmm_send_enabled() {
+  [ "${FMM_SEND:-}" = 1 ]
 }
 
 fmm_enabled() {

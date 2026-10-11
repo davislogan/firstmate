@@ -46,6 +46,9 @@ case "$cmd" in
   reply-draft)
     [ -n "${FAKE_REPLY_FAIL:-}" ] && exit 1
     echo "draft-123" ;;
+  reply-send)
+    [ -n "${FAKE_REPLY_FAIL:-}" ] && exit 1
+    echo "sent-456" ;;
   move)
     [ -n "${FAKE_MOVE_FAIL:-}" ] && exit 1
     echo moved ;;
@@ -428,6 +431,37 @@ test_reply_drafts_and_moves() {
   pass "fm-mail-reply drafts by file, restricts attachments to out/, and moves to done"
 }
 
+test_reply_send_mode() {
+  local home fakebin req=20261010-1412-a3f9c1 dir out
+  home=$(make_home send); fakebin=$(make_fake_mail_axi "$home")
+  seed_request "$home" "$req"; dir="$home/data/mail-requests/$req"
+  printf 'Done, captain.\n' > "$home/body.txt"
+  printf 'q' > "$dir/out/quote.csv"
+  PATH="$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-mail-reply.sh" "$req" --body-file "$home/body.txt" --send >/dev/null 2>&1
+  expect_code 2 $? "--send must be refused without FM_MAIL_SEND=1"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FAKE_MAIL_LOG="$home/mail.log" "$ROOT/bin/fm-mail-reply.sh" "$req" --body-file "$home/body.txt")
+  assert_contains "$out" "draft draft-123" "draft stays the default without the opt-in"
+  assert_no_grep "reply-send" "$home/mail.log" "no send without the opt-in"
+  : > "$home/mail.log"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_MAIL_SEND=1 FAKE_MAIL_LOG="$home/mail.log" \
+    "$ROOT/bin/fm-mail-reply.sh" "$req" --body-file "$home/body.txt" --attach "$dir/out/quote.csv" --done); expect_code 0 $? "send exit"
+  assert_contains "$out" "send sent-456" "send must print the sent id"
+  assert_grep "reply-send AAkALgAA-graph_id= --mailbox firstmate@example.com --body-file $home/body.txt --cc-captain --attach" "$home/mail.log" "send must call reply-send with --cc-captain"
+  assert_grep "send sent-456" "$dir/replies.log" "the sent id must be logged"
+  : > "$home/mail.log"
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_MAIL_SEND=1 FAKE_MAIL_LOG="$home/mail.log" "$ROOT/bin/fm-mail-reply.sh" "$req" --body-file "$home/body.txt" --draft >/dev/null
+  assert_grep "reply-draft" "$home/mail.log" "--draft must force a draft"
+  assert_no_grep "reply-send" "$home/mail.log" "--draft must not send"
+  printf 'FM_MAIL_SEND=1\n' >> "$home/.env"
+  : > "$home/mail.log"
+  printf 'window=fm-t1\nkind=ship\n' > "$home/state/t1.meta"
+  FM_HOME="$home" "$ROOT/bin/fm-mail-link.sh" t1 "$req" >/dev/null
+  PATH="$fakebin:$PATH" FM_HOME="$home" FAKE_MAIL_LOG="$home/mail.log" "$ROOT/bin/fm-mail-followup.sh" t1 --final --body-file "$home/body.txt" >/dev/null
+  expect_code 0 $? "send followup via .env opt-in"
+  assert_grep "--cc-captain" "$home/mail.log" "follow-up must send with --cc-captain when opted in"
+  pass "fm-mail-reply and fm-mail-followup send only when FM_MAIL_SEND=1, always with --cc-captain"
+}
+
 test_link_and_followup() {
   local home fakebin req=20261010-1412-a3f9c1 out
   home=$(make_home link); fakebin=$(make_fake_mail_axi "$home")
@@ -505,5 +539,6 @@ test_unzip_limits
 test_ingest_ok_duplicate_untrusted_toobig
 test_ingest_rechecks_saved_sizes
 test_reply_drafts_and_moves
+test_reply_send_mode
 test_link_and_followup
 test_prune_retention

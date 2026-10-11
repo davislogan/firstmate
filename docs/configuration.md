@@ -237,7 +237,7 @@ These paths need `jq` to build the JSON payload, but they run before token and n
 Mail mode lets the captain email a request to a dedicated intake mailbox and have firstmate handle it as if it had been typed at the terminal.
 It is off unless the firstmate home's gitignored `.env` contains non-empty `FM_MAIL_INTAKE` (the intake mailbox address) and `FM_MAIL_CAPTAIN` (the allowed sender, or a comma-separated allowlist).
 `FM_MAIL_TENANT` carries the Microsoft 365 tenant id that mail-axi checks; the poll reports `mail-intake-error missing FM_MAIL_TENANT` until it is set.
-Opting in is standing authorization for reversible work up to "PR ready" (tier T1); merges, outbound mail to anyone else, money, deletes, and config or credential changes (tier T2) are parked for the captain's word at the terminal.
+Opting in is standing authorization for reversible work up to "PR ready" (tier T1); merges, money, deletes, and config or credential changes (tier T2) are parked for the captain's word at the terminal.
 For direct client invocations, environment values override `.env`, and `FM_MAIL_ENV_FILE` can point them at another `.env`-style file; bootstrap activation still keys off `$FM_HOME/.env`.
 
 The locked session-start bootstrap step turns that config into local generated state, exactly as for X mode.
@@ -301,12 +301,24 @@ It extracts one nested zip level and skips deeper archives; files are written `0
 mail-axi reply-draft <graphId> --mailbox <FM_MAIL_INTAKE> --body-file <path> [--attach <file>]...
 ```
 
-That creates a threaded reply draft in the intake mailbox's Drafts; nothing is sent in this phase, and the recipient is always the original verified sender.
+That creates a threaded reply draft in the intake mailbox's Drafts, and the recipient is always the original verified sender.
+Drafts are the default.
+Real sends are opt-in: set `FM_MAIL_SEND=1` in `.env` (or the environment) and the same helpers run
+
+```sh
+mail-axi reply-send <graphId> --mailbox <FM_MAIL_INTAKE> --body-file <path> --cc-captain [--attach <file>]...
+```
+
+instead, so the reply is sent from the intake mailbox.
+Recipients are restricted to exactly the addresses in `FM_MAIL_CAPTAIN` (the comma list of allowed senders), never anyone else, and the captain (the first address) is cc'd on every message; mail-axi enforces the allowlist in code, and the tenant enforces "never outside the org" server side.
+The tenant admin script (`phase2-send`) must be run first to grant the intake mailbox send rights, or sends fail.
+`--send` insists on sending and exits 2 unless `FM_MAIL_SEND=1`; `--draft` forces a draft even when sends are opted in.
+Email confirmation or approval of T2 actions is not implemented; those stay terminal-only.
 Attachments must resolve inside the request's `out/` folder.
 `--done` then runs `mail-axi move <graphId> --folder done --mailbox <FM_MAIL_INTAKE>`.
-Draft ids are logged to the request's `replies.log`.
+Draft and sent ids are logged to the request's `replies.log`.
 A request that spawns work is linked with `bin/fm-mail-link.sh <task-id> <req>` (`mail_req=` and `mail_req_ts=` in the task meta).
-`bin/fm-mail-followup.sh <task-id> [--final] --body-file <path>` drafts a follow-up for a linked task; `--final` also moves the message to `done` and clears the link.
+`bin/fm-mail-followup.sh <task-id> [--final] [--send|--draft] --body-file <path>` drafts (or sends) a follow-up for a linked task; `--final` also moves the message to `done` and clears the link.
 It exits 6 when the draft landed but the move failed, and 7 when the final draft landed but the link could not be cleared; neither should be retried as a new draft.
 
 ## Environment variables

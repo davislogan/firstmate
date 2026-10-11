@@ -85,6 +85,7 @@ For each `<req>`:
      If the request waited while firstmate was down, say it was picked up late.
    Attachments must already be copied into the request's `out/` folder.
 7. On a non-zero exit, leave the request as it is, continue with the next one, and surface a repeat failure to the captain with the stderr line.
+   Never blindly retry a failed send: it may have been delivered anyway, so check the intake mailbox's Sent folder and `data/mail-requests/<req>/replies.log` first.
 
 ## Follow-ups on a mail-linked task's wakes
 

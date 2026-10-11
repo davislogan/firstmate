@@ -40,7 +40,7 @@ usage() {
 
 REQ=${1:-}
 [ -n "$REQ" ] || { usage; exit 2; }
-case "$REQ" in -h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+case "$REQ" in -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
 shift
 fmm_safe_slug "$REQ" || { echo "fm-mail-reply: unsafe request id: $REQ" >&2; exit 2; }
 
@@ -87,7 +87,7 @@ if [ -n "$BODY" ]; then
   fi
   out_real=$(cd "$DIR/out" 2>/dev/null && pwd -P) || { echo "fm-mail-reply: missing $DIR/out" >&2; exit 2; }
   if [ "$MODE" = send ]; then
-    args=(reply-send "$GRAPH_ID" --mailbox "$FMM_INTAKE" --body-file "$BODY" --cc-captain --allow-from "$FMM_CAPTAIN")
+    args=(reply-send "$GRAPH_ID" --mailbox "$FMM_INTAKE" --body-file "$BODY" --cc-captain --allow-from "${FMM_CAPTAIN// /}")
   else
     args=(reply-draft "$GRAPH_ID" --mailbox "$FMM_INTAKE" --body-file "$BODY")
   fi

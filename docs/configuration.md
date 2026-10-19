@@ -386,7 +386,9 @@ FM_MAIL_CAPTAIN=         # mail mode allowed sender address, or a comma-separate
 FM_MAIL_SEND=            # optional; 1 = really send mail-mode replies instead of leaving drafts
 FM_MAIL_TENANT=          # tenant id mail-axi verifies on every intake message
 FM_MAIL_ENV_FILE=        # optional alternate .env file for direct mail-mode client invocations; bootstrap still checks $FM_HOME/.env
-FM_MAIL_POLL_TIMEOUT=20  # seconds allowed for one mail-axi intake call, kept below FM_CHECK_TIMEOUT
+FM_MAIL_POLL_TIMEOUT=20  # seconds allowed for one mail-axi intake call; with the stagger, kept below FM_CHECK_TIMEOUT
+FM_MAIL_ERROR_THRESHOLD=2  # consecutive failed polls before a transient-prone mail-axi failure surfaces as mail-intake-error
+FM_MAIL_STAGGER_MAX=5    # max seconds of deterministic per-home sleep before the mail-axi call; capped at a quarter of FM_CHECK_TIMEOUT
 FM_MAIL_PENDING_REWAKE=1800  # seconds before an unchanged set of stranded inbox stashes re-wakes firstmate
 FM_MAIL_MAX_FILE_BYTES=26214400      # per-attachment download cap (25 MiB)
 FM_MAIL_MAX_REQUEST_BYTES=52428800   # per-request attachment download cap (50 MiB)

@@ -202,7 +202,7 @@ stagger_max=${FM_MAIL_STAGGER_MAX:-5}
 case "$stagger_max" in ''|*[!0-9]*) stagger_max=5 ;; esac
 [ "$stagger_max" -le $((check_limit / 4)) ] || stagger_max=$((check_limit / 4))
 stagger=$(( $(printf '%s' "$FM_HOME" | cksum | cut -d' ' -f1) % (stagger_max + 1) ))
-if [ $((stagger + limit)) -ge "$check_limit" ]; then
+if [ $((stagger + limit + 5)) -gt "$check_limit" ]; then
   limit=$((check_limit - stagger - 5))
   [ "$limit" -ge 1 ] || limit=1
 fi
@@ -254,11 +254,11 @@ if [ "$count" -gt 0 ]; then
   exit 0
 fi
 
-wake_pending && exit 0
-
 nerr=$(jq -r '(.errors // []) | length' "$OUT" 2>/dev/null || echo 0)
 case "$nerr" in ''|*[!0-9]*) nerr=0 ;; esac
 if [ "$nerr" -gt 0 ]; then
   transient_fail 0 "$elapsed" "mail-axi intake reported $nerr error(s): $(jq -r '(.errors[0] | if type == "string" then . else tojson end)' "$OUT" 2>/dev/null)"
 fi
+
+wake_pending && exit 0
 clear_error

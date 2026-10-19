@@ -262,8 +262,15 @@ A failing message is moved to the mailbox's `rejected` folder and never stashed.
 A passing message is written atomically to `state/mail-inbox/<req>.json` and moved to `processing`; mail-axi advances its cursor only after the whole batch is stashed or rejected, so delivery is at-least-once.
 The poll reads only mail-axi's JSON summary (`{"accepted":[...],"rejected":n,"errors":[...]}`): when it accepted requests it prints `mail-request <req>` with a ` (+N)` suffix for the rest of the batch; otherwise it is silent.
 When nothing was accepted but stashes still wait in `state/mail-inbox/` (an ingest error, a restart mid-drain, or a missed wake), it prints the same line for the oldest pending request, repeated only when the pending set changes or after `FM_MAIL_PENDING_REWAKE` seconds (1800), tracked in `state/mail-poll.pending`.
-A missing tool or tenant, a nonzero exit, a timeout, unparseable output, or reported errors with nothing accepted print one `mail-intake-error <msg>` line, repeated only when the message changes or after a clean poll clears `state/mail-poll.error`.
-While that line is suppressed as a repeat, the stranded-stash reminder still fires, so requests already waiting in the inbox resurface even while mail-axi is failing.
+A missing tool or tenant (or an uncreatable inbox) prints one `mail-intake-error <msg>` line at once, repeated only when the message changes or after a clean poll clears `state/mail-poll.error`.
+A nonzero exit, a timeout, unparseable output, or reported errors with nothing accepted are treated as possibly transient: homes sharing one mailbox flap on isolated timeouts, so they are counted in `state/mail-poll.failcount` and surface as `mail-intake-error` only after `FM_MAIL_ERROR_THRESHOLD` consecutive failed polls (default 2, so a real outage surfaces within about two poll intervals).
+A clean poll resets the count.
+The diagnostic is built from mail-axi's stderr first, then its stdout (a JSON `error` or `message` field, else the first non-empty line), sanitized and bounded to one line; it never includes message content.
+Every failure, suppressed or not, is appended as `<epoch> rc=<rc> elapsed=<s>s <message>` to `state/mail-poll.failures.log`, which is trimmed to stay small, so contention between homes can be judged later without waking anyone.
+While a failure is suppressed (below the threshold, or a repeat), the stranded-stash reminder still fires, so requests already waiting in the inbox resurface even while mail-axi is failing.
+Before the mail-axi call the poll sleeps a deterministic per-home stagger (`cksum` of `FM_HOME` modulo `FM_MAIL_STAGGER_MAX` + 1, default max 5s, capped at a quarter of `FM_CHECK_TIMEOUT`) so homes polling one mailbox do not hit it at the same instant.
+The stagger plus `FM_MAIL_POLL_TIMEOUT` is clamped below `FM_CHECK_TIMEOUT`.
+There is no in-poll retry; the next poll is the retry.
 
 The request id is `YYYYMMDD-HHMM-<6 hex of sha256(internetMessageId)>`, and the stash schema is:
 

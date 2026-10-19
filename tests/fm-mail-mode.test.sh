@@ -37,6 +37,7 @@ case "$cmd" in
         printf '{"accepted":[%s],"rejected":1,"errors":[]}\n' "$(IFS=,; echo "${ids[*]}")" ;;
       raw) printf '%s\n' "$FAKE_INTAKE_RAW" ;;
       fail) echo "graph auth failed: token expired" >&2; exit 3 ;;
+      stdout-fail) printf '{"error":"mailbox throttled"}\n'; exit 1 ;;
       sleep) sleep 5; printf '{"accepted":[]}\n' ;;
     esac ;;
   save-attachments)
@@ -92,7 +93,8 @@ PY
 
 run_poll() {
   local home=$1 fakebin=$2
-  PATH="$fakebin:$PATH" FM_HOME="$home" FAKE_MAIL_LOG="$home/mail.log" "$ROOT/bin/fm-mail-poll.sh"
+  PATH="$fakebin:$PATH" FM_HOME="$home" FAKE_MAIL_LOG="$home/mail.log" FM_MAIL_STAGGER_MAX="${FM_MAIL_STAGGER_MAX:-0}" \
+    "$ROOT/bin/fm-mail-poll.sh"
 }
 
 # --- poll ------------------------------------------------------------------
@@ -169,11 +171,11 @@ test_poll_rewakes_for_stranded_stashes() {
   [ -z "$out" ] || fail "an empty inbox must be silent (got: $out)"
   assert_absent "$home/state/mail-poll.pending" "an empty inbox must clear the pending marker"
   write_stash "$inbox/20261010-1100-cccccc.json" 20261010-1100-cccccc
-  out=$(FAKE_INTAKE_MODE=fail FM_MAIL_NOW_OVERRIDE=3000 run_poll "$home" "$fakebin")
+  out=$(FAKE_INTAKE_MODE=fail FM_MAIL_ERROR_THRESHOLD=1 FM_MAIL_NOW_OVERRIDE=3000 run_poll "$home" "$fakebin")
   assert_contains "$out" "mail-intake-error mail-axi intake failed" "a new intake failure must surface first"
-  out=$(FAKE_INTAKE_MODE=fail FM_MAIL_NOW_OVERRIDE=3060 run_poll "$home" "$fakebin")
+  out=$(FAKE_INTAKE_MODE=fail FM_MAIL_ERROR_THRESHOLD=1 FM_MAIL_NOW_OVERRIDE=3060 run_poll "$home" "$fakebin")
   [ "$out" = "mail-request 20261010-1100-cccccc" ] || fail "a repeated failure must still remind about stranded stashes (got: $out)"
-  out=$(FAKE_INTAKE_MODE=fail FM_MAIL_NOW_OVERRIDE=3120 run_poll "$home" "$fakebin")
+  out=$(FAKE_INTAKE_MODE=fail FM_MAIL_ERROR_THRESHOLD=1 FM_MAIL_NOW_OVERRIDE=3120 run_poll "$home" "$fakebin")
   [ -z "$out" ] || fail "the failure-path reminder must stay rate-limited (got: $out)"
   out=$(FM_MAIL_TENANT='' FM_MAIL_NOW_OVERRIDE=3180 run_poll "$home" "$fakebin")
   assert_contains "$out" "mail-intake-error missing FM_MAIL_TENANT" "a config failure must surface"
@@ -186,6 +188,7 @@ test_poll_rewakes_for_stranded_stashes() {
 test_poll_error_rate_limited() {
   local home fakebin out
   home=$(make_home poll-err); fakebin=$(make_fake_mail_axi "$home")
+  export FM_MAIL_ERROR_THRESHOLD=1
   out=$(FAKE_INTAKE_MODE=fail run_poll "$home" "$fakebin")
   assert_contains "$out" "mail-intake-error mail-axi intake failed (exit 3): graph auth failed" "first failure must surface"
   out=$(FAKE_INTAKE_MODE=fail run_poll "$home" "$fakebin")
@@ -201,6 +204,7 @@ test_poll_error_rate_limited() {
   assert_contains "$out" "mail-intake-error mail-axi intake reported 1 error(s): mailbox not allowed" "reported errors must surface"
   out=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_MAIL_TENANT='' "$ROOT/bin/fm-mail-poll.sh")
   assert_contains "$out" "mail-intake-error missing FM_MAIL_TENANT" "a missing tenant must surface"
+  unset FM_MAIL_ERROR_THRESHOLD
   pass "fm-mail-poll reports failures once per distinct message"
 }
 
@@ -208,9 +212,81 @@ test_poll_timeout() {
   local home fakebin out
   command -v timeout >/dev/null 2>&1 || { pass "fm-mail-poll timeout (skipped: no timeout binary)"; return; }
   home=$(make_home poll-timeout); fakebin=$(make_fake_mail_axi "$home")
-  out=$(FAKE_INTAKE_MODE=sleep FM_MAIL_POLL_TIMEOUT=1 run_poll "$home" "$fakebin")
+  out=$(FAKE_INTAKE_MODE=sleep FM_MAIL_POLL_TIMEOUT=1 FM_MAIL_ERROR_THRESHOLD=1 run_poll "$home" "$fakebin")
   assert_contains "$out" "mail-intake-error mail-axi intake timed out after 1s" "a hung mail-axi must time out"
   pass "fm-mail-poll bounds the mail-axi call inside the check timeout"
+}
+
+test_poll_failure_threshold() {
+  local home fakebin out inbox
+  home=$(make_home poll-thresh); fakebin=$(make_fake_mail_axi "$home")
+  out=$(FAKE_INTAKE_MODE=fail run_poll "$home" "$fakebin")
+  [ -z "$out" ] || fail "a single transient failure must be silent (got: $out)"
+  assert_grep "graph auth failed"  "$home/state/mail-poll.failures.log" "the suppressed failure must be logged"
+  out=$(FAKE_INTAKE_MODE=fail run_poll "$home" "$fakebin")
+  assert_contains "$out" "mail-intake-error mail-axi intake failed (exit 3)" "the second consecutive failure must surface"
+  out=$(run_poll "$home" "$fakebin")
+  [ -z "$out" ] || fail "a clean poll must be silent"
+  assert_absent "$home/state/mail-poll.failcount" "a clean poll must reset the failure count"
+  out=$(FAKE_INTAKE_MODE=fail run_poll "$home" "$fakebin")
+  [ -z "$out" ] || fail "the count must restart after a clean poll (got: $out)"
+  out=$(FAKE_INTAKE_MODE=raw FAKE_INTAKE_RAW='not json' run_poll "$home" "$fakebin")
+  assert_contains "$out" "unparseable output" "a second consecutive failure of another kind must surface"
+  # stdout-only error text (mail-axi --json reports errors on stdout)
+  home=$(make_home poll-stdout); fakebin=$(make_fake_mail_axi "$home")
+  out=$(FAKE_INTAKE_MODE=stdout-fail run_poll "$home" "$fakebin")
+  [ -z "$out" ] || fail "first stdout-only failure must be silent (got: $out)"
+  out=$(FAKE_INTAKE_MODE=stdout-fail run_poll "$home" "$fakebin")
+  assert_contains "$out" "mail-intake-error mail-axi intake failed (exit 1): mailbox throttled" "stdout JSON error text must be captured"
+  # config errors surface immediately
+  home=$(make_home poll-config); fakebin=$(make_fake_mail_axi "$home")
+  out=$(FM_MAIL_TENANT='' run_poll "$home" "$fakebin")
+  assert_contains "$out" "mail-intake-error missing FM_MAIL_TENANT" "a config error must not wait for the threshold"
+  # stash reminders fire while a failure is suppressed
+  home=$(make_home poll-thresh-stash); fakebin=$(make_fake_mail_axi "$home")
+  inbox="$home/state/mail-inbox"; mkdir -p "$inbox"
+  write_stash "$inbox/20261010-1100-cccccc.json" 20261010-1100-cccccc
+  out=$(FAKE_INTAKE_MODE=fail run_poll "$home" "$fakebin")
+  [ "$out" = "mail-request 20261010-1100-cccccc" ] || fail "a suppressed failure must still remind about stashes (got: $out)"
+  pass "fm-mail-poll surfaces only consecutive failures, captures stdout errors, and keeps config and stash behavior"
+}
+
+test_poll_failure_log_bounded() {
+  local home fakebin i n
+  home=$(make_home poll-logcap); fakebin=$(make_fake_mail_axi "$home")
+  for i in $(seq 1 450); do printf '%s rc=1 elapsed=1s x\n' "$i"; done > "$home/state/mail-poll.failures.log"
+  FAKE_INTAKE_MODE=fail run_poll "$home" "$fakebin" >/dev/null
+  n=$(wc -l < "$home/state/mail-poll.failures.log")
+  [ "$n" -le 401 ] || fail "failure log must stay capped (got $n lines)"
+  pass "fm-mail-poll keeps its failure log bounded"
+}
+
+test_poll_stagger_in_budget() {
+  local home fakebin out sleeps lim
+  home=$(make_home poll-stagger); fakebin=$(make_fake_mail_axi "$home")
+  cat > "$fakebin/sleep" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >> "$FAKE_SLEEP_LOG"
+SH
+  chmod +x "$fakebin/sleep"
+  out=$(FAKE_SLEEP_LOG="$home/sleep.log" FM_MAIL_STAGGER_MAX=5 run_poll "$home" "$fakebin")
+  [ -z "$out" ] || fail "stagger run must be silent (got: $out)"
+  sleeps=$(cat "$home/sleep.log" 2>/dev/null || true)
+  case "$sleeps" in ''|[0-5]) : ;; *) fail "stagger must stay within FM_MAIL_STAGGER_MAX (got: $sleeps)" ;; esac
+  rm -f "$home/sleep.log"
+  # a tiny check budget shrinks the stagger to a quarter of it
+  FAKE_SLEEP_LOG="$home/sleep.log" FM_MAIL_STAGGER_MAX=50 FM_CHECK_TIMEOUT=8 run_poll "$home" "$fakebin" >/dev/null
+  sleeps=$(cat "$home/sleep.log" 2>/dev/null || true)
+  case "$sleeps" in ''|[0-2]) : ;; *) fail "stagger must be capped to a quarter of FM_CHECK_TIMEOUT (got: $sleeps)" ;; esac
+  # stagger + mail-axi timeout stay under the check timeout
+  command -v timeout >/dev/null 2>&1 || { pass "fm-mail-poll stagger stays inside the check budget"; return; }
+  rm -f "$home/sleep.log"
+  lim=$(FAKE_SLEEP_LOG="$home/sleep.log" FM_MAIL_STAGGER_MAX=50 FM_CHECK_TIMEOUT=30 FM_MAIL_POLL_TIMEOUT=99 \
+    bash -c 'PATH="$1:$PATH" FM_HOME="$2" bash -x "$3" 2>&1 >/dev/null | grep -m1 "^+ timeout " | cut -d" " -f3' _ "$fakebin" "$home" "$ROOT/bin/fm-mail-poll.sh")
+  sleeps=$(cat "$home/sleep.log" 2>/dev/null || echo 0)
+  [ -n "$lim" ] || fail "could not read the timeout limit"
+  [ $((${sleeps:-0} + lim)) -lt 30 ] || fail "stagger $sleeps + timeout $lim must stay under FM_CHECK_TIMEOUT"
+  pass "fm-mail-poll stagger stays inside the check budget"
 }
 
 # --- bootstrap -------------------------------------------------------------
@@ -531,6 +607,9 @@ test_poll_ignores_unsafe_or_unstashed_ids
 test_poll_rewakes_for_stranded_stashes
 test_poll_error_rate_limited
 test_poll_timeout
+test_poll_failure_threshold
+test_poll_failure_log_bounded
+test_poll_stagger_in_budget
 test_bootstrap_opt_in_and_out
 test_bootstrap_missing_mail_axi
 test_supervision_instructions_source_mail_cadence

@@ -13,7 +13,7 @@ metadata:
 
 Use this reference before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited config into, or retiring a persistent secondmate, and before editing `data/secondmates.md`.
 
-Keep the always-inline routing rules in `AGENTS.md` authoritative: route by natural-language `scope:`, local-only projects stay with the main firstmate, and secondmates are idle by default.
+Keep the always-inline routing rules in `AGENTS.md` authoritative: route by natural-language `scope:`, local-only projects stay with the main firstmate unless a secondmate home holds them in place, and secondmates are idle by default.
 
 ## Routing table
 
@@ -77,8 +77,11 @@ Run `bin/fm-home-seed.sh validate` when checking registry integrity; it refuses 
 Seeding is transactional.
 If validation, cloning, no-mistakes initialization, or registry update fails, generated briefs, new homes, new project clones, and registry edits are rolled back.
 
-Secondmate project lists may include `no-mistakes` and `direct-PR` projects only.
-`local-only` projects stay with the main firstmate.
+Secondmate project lists may include `no-mistakes` and `direct-PR` projects, which seeding clones from their origin.
+A `local-only` project has no remote to clone and its local merges must land where the primary sees them, so seeding never clones one.
+It is accepted only in place: the secondmate home's `projects/<project>` already exists as a work tree of the same repository as the primary's `projects/<project>`, recognized by a matching resolved git common dir, with no origin required.
+The usual shape is both entries being symlinks to one live checkout that the live system executes from; create that symlink in the secondmate home before seeding.
+Any other `local-only` project stays with the main firstmate; `bin/fm-home-seed.sh`'s header lists the exact accepted and refused cases.
 For `no-mistakes` projects, seeding initializes only projects newly cloned into a secondmate home and refuses to mutate a preexisting clone that is not already initialized.
 
 ## Backlog handoff
@@ -97,7 +100,7 @@ It preserves the line and its section, so the item is neither duplicated nor los
 It refuses `## In flight` entries because active task ownership also lives in tmux and `state/`.
 It is idempotent; an item already in the secondmate backlog is skipped.
 It refuses any destination that is not a genuine seeded firstmate home with safe operational directories and a matching `.fm-secondmate-home` marker, so a move can never land in a project.
-Do not hand off `local-only` items.
+Do not hand off `local-only` items unless the secondmate home holds that project in place, as described under "Charter and seed" above.
 
 ## Recovery
 

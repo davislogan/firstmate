@@ -13,6 +13,17 @@
 #       is copied to data/charter.md, newly cloned no-mistakes projects are
 #       initialized, a .fm-secondmate-home marker is written, and
 #       data/secondmates.md is updated.
+#       Project modes: no-mistakes and direct-PR projects need an origin; an
+#       absent destination is cloned from it, and an existing destination must
+#       be a git work tree with the same origin. A local-only project is never
+#       cloned: it is accepted only when <home>/projects/<project> already exists
+#       as a work-tree top level sharing the source project's resolved git common
+#       dir (typically both are symlinks to one in-place live checkout, which may
+#       resolve outside projects/ but never inside the active home or the
+#       firstmate repo), and no origin is required. A local-only project is
+#       refused when its destination is absent (including any "-" home), not a
+#       git work tree, a different repository, or only a subdirectory of the
+#       source repository's work tree.
 #       Seeding is transactional: on validation, clone, init, or registry failure,
 #       generated briefs, new homes, new project clones, and registry edits are
 #       rolled back. Treehouse-acquired homes are returned only when the rollback
@@ -409,7 +420,7 @@ validate_project_destination() {
     echo "error: secondmate projects directory must resolve inside the secondmate home: $projects_dir" >&2
     return 1
   fi
-  if ! path_is_ancestor_of "$abs_projects" "$abs_dst"; then
+  if ! path_is_ancestor_of "$abs_projects" "$abs_dst" && ! project_is_in_place_local_only "$project" "$dst"; then
     echo "error: seeded project $project destination must resolve inside the secondmate projects directory: $dst" >&2
     return 1
   fi
@@ -528,18 +539,65 @@ EOF
   return 1
 }
 
+seed_project_mode() {
+  local project=$1 mode
+  read -r mode _ <<EOF
+$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$FM_ROOT/bin/fm-project-mode.sh" "$project")
+EOF
+  printf '%s\n' "$mode"
+}
+
+git_common_dir_for() {
+  local path=$1 dir
+  dir=$(cd "$path" && git rev-parse --git-common-dir 2>/dev/null) || return 1
+  [ -n "$dir" ] || return 1
+  ( cd "$path" && readlink -f -- "$dir" )
+}
+
+# Succeeds when <dst> is already a work-tree top level of the very repository at
+# <src> (same resolved git common dir), so seeding has nothing to clone and the
+# primary sees every local merge made there.
+project_in_place() {
+  local src=$1 dst=$2 src_common dst_common dst_top
+  [ -d "$dst" ] || return 1
+  git -C "$dst" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  dst_top=$(git -C "$dst" rev-parse --show-toplevel 2>/dev/null) || return 1
+  [ "$(readlink -f -- "$dst_top")" = "$(readlink -f -- "$dst")" ] || return 1
+  src_common=$(git_common_dir_for "$src") || return 1
+  dst_common=$(git_common_dir_for "$dst") || return 1
+  [ "$src_common" = "$dst_common" ]
+}
+
+# An in-place local-only project may resolve outside the secondmate projects
+# directory, because it is the primary's own live checkout, not a seeded clone.
+project_is_in_place_local_only() {
+  local project=$1 dst=$2
+  case "$project" in
+    ''|.|..|*/*) return 1 ;;
+  esac
+  [ "$(seed_project_mode "$project")" = local-only ] || return 1
+  project_in_place "$PROJECTS/$project" "$dst"
+}
+
+local_only_seed_error() {
+  local project=$1 src=$2 dst=$3
+  if [ -e "$dst" ]; then
+    echo "error: project $project is local-only but $dst is not the same repository as $src; an in-place local-only project must be a work tree sharing the source's git common dir" >&2
+  else
+    echo "error: project $project is local-only and not already in place at $dst; seeding would have to clone it, and secondmate routes clone only no-mistakes and direct-PR projects" >&2
+  fi
+}
+
 clone_project() {
   local project=$1 home=$2 src dst url dst_url mode
   src="$PROJECTS/$project"
   dst=$(validate_project_destination "$home" "$project") || return 1
   [ -d "$src" ] || { echo "error: project $project not found at $src" >&2; return 1; }
   git -C "$src" rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "error: project $project is not a git repo" >&2; return 1; }
-  read -r mode _ <<EOF
-$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$FM_ROOT/bin/fm-project-mode.sh" "$project")
-EOF
+  mode=$(seed_project_mode "$project")
   if [ "$mode" = local-only ]; then
-    echo "error: project $project is local-only; secondmate routes support only no-mistakes and direct-PR projects" >&2
-    return 1
+    project_in_place "$src" "$dst" || { local_only_seed_error "$project" "$src" "$dst"; return 1; }
+    return 0
   fi
   if [ -e "$dst" ]; then
     [ -d "$dst" ] || { echo "error: seeded project $project exists at $dst but is not a directory" >&2; return 1; }
@@ -556,17 +614,22 @@ EOF
   git clone --quiet "$url" "$dst"
 }
 
+# Runs before any mutation. A treehouse-acquired home ("-") does not exist yet,
+# so it can never hold a local-only project in place.
 validate_seed_project() {
-  local project=$1 src mode url
+  local project=$1 requested_home=$2 src mode url dst
   src="$PROJECTS/$project"
   [ -d "$src" ] || { echo "error: project $project not found at $src" >&2; return 1; }
   git -C "$src" rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "error: project $project is not a git repo" >&2; return 1; }
-  read -r mode _ <<EOF
-$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$FM_ROOT/bin/fm-project-mode.sh" "$project")
-EOF
+  mode=$(seed_project_mode "$project")
   if [ "$mode" = local-only ]; then
-    echo "error: project $project is local-only; secondmate routes support only no-mistakes and direct-PR projects" >&2
-    return 1
+    if [ "$requested_home" = "-" ]; then
+      echo "error: project $project is local-only and a newly acquired secondmate home cannot hold it in place; seeding would have to clone it, and secondmate routes clone only no-mistakes and direct-PR projects" >&2
+      return 1
+    fi
+    dst="$(abs_path_for_new "$requested_home")/projects/$project"
+    project_is_in_place_local_only "$project" "$dst" || { local_only_seed_error "$project" "$src" "$dst"; return 1; }
+    return 0
   fi
   url=$(git -C "$src" remote get-url origin 2>/dev/null || true)
   [ -n "$url" ] || { echo "error: project $project is $mode but has no origin remote" >&2; return 1; }
@@ -808,7 +871,7 @@ seed_home() {
   mkdir -p "$DATA"
   validate_registry
   for project in "$@"; do
-    validate_seed_project "$project"
+    validate_seed_project "$project" "$requested_home"
   done
 
   SEED_ROLLBACK_ACTIVE=1

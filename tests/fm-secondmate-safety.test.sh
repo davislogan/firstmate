@@ -396,6 +396,8 @@ test_home_seed_refuses_empty_charter_fields() {
 }
 
 test_home_seed_refuses_local_only_project() {
+  # The clone path: a local-only project absent from the destination home would
+  # have to be cloned, so seeding refuses it before creating anything.
   local home subhome err
   home="$TMP_ROOT/local-only-seed-home"
   subhome="$TMP_ROOT/local-only-seed-subhome"
@@ -407,10 +409,100 @@ test_home_seed_refuses_local_only_project() {
   if FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" design "$subhome" alpha >/dev/null 2>"$err"; then
     fail "seed allowed a local-only project into a secondmate home"
   fi
-  grep -F 'project alpha is local-only; secondmate routes support only no-mistakes and direct-PR projects' "$err" >/dev/null \
-    || fail "seed did not explain local-only project rejection"
+  grep -F 'project alpha is local-only and not already in place' "$err" >/dev/null \
+    || fail "seed did not explain local-only clone-path rejection"
   [ ! -e "$subhome" ] || fail "seed created a subhome before rejecting a local-only project"
-  pass "home seeding refuses local-only projects"
+
+  if FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" design - alpha >/dev/null 2>"$err"; then
+    fail "seed allowed a local-only project into a newly acquired home"
+  fi
+  grep -F 'newly acquired secondmate home cannot hold it in place' "$err" >/dev/null \
+    || fail "seed did not explain local-only rejection for an acquired home"
+  pass "home seeding refuses local-only projects that would need a clone"
+}
+
+# Primary and subhome both point projects/alpha at one live checkout outside
+# either home, mirroring an in-place local-only project.
+setup_in_place_local_only() {
+  local home=$1 subhome=$2 live=$3 mode=$4
+  mkdir -p "$home/projects" "$home/data" "$home/state"
+  fm_git_init_commit "$live"
+  ln -s "$live" "$home/projects/alpha"
+  git clone --quiet "$ROOT" "$subhome"
+  mkdir -p "$subhome/projects"
+  printf -- '- alpha [%s] - alpha project (added 2026-06-22)\n' "$mode" > "$home/data/projects.md"
+  scaffold_secondmate_charter "$home" design 'design domain' alpha || fail "charter scaffold failed for in-place seed test"
+}
+
+test_home_seed_accepts_in_place_local_only_project() {
+  local home subhome live out subhome_abs
+  home="$TMP_ROOT/in-place-home"
+  subhome="$TMP_ROOT/in-place-subhome"
+  live="$TMP_ROOT/in-place-live/alpha"
+  setup_in_place_local_only "$home" "$subhome" "$live" local-only
+  ln -s "$live" "$subhome/projects/alpha"
+  ! git -C "$live" remote get-url origin >/dev/null 2>&1 || fail "in-place fixture unexpectedly has an origin"
+
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" design "$subhome" alpha) \
+    || fail "seed refused an in-place local-only project with no origin"
+  subhome_abs=$(cd "$subhome" && pwd -P)
+  printf '%s\n' "$out" | grep -F "home=$subhome_abs" >/dev/null || fail "in-place seed did not report the subhome"
+  [ -L "$subhome/projects/alpha" ] || fail "in-place seed replaced the project symlink"
+  [ "$(readlink "$subhome/projects/alpha")" = "$live" ] || fail "in-place seed retargeted the project symlink"
+  grep -F -- '- alpha [local-only] - alpha project' "$subhome/data/projects.md" >/dev/null \
+    || fail "in-place seed did not record the local-only mode in the subhome registry"
+  [ "$(cat "$subhome/.fm-secondmate-home")" = design ] || fail "in-place seed did not mark the subhome"
+  FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" design "$subhome" alpha >/dev/null \
+    || fail "in-place local-only reseed was refused"
+  pass "home seeding accepts an in-place local-only project with no origin"
+}
+
+test_home_seed_refuses_in_place_local_only_different_repo() {
+  local home subhome live other err
+  home="$TMP_ROOT/in-place-other-home"
+  subhome="$TMP_ROOT/in-place-other-subhome"
+  live="$TMP_ROOT/in-place-other-live/alpha"
+  other="$TMP_ROOT/in-place-other-live/impostor"
+  err="$TMP_ROOT/in-place-other.err"
+  setup_in_place_local_only "$home" "$subhome" "$live" local-only
+  fm_git_init_commit "$other"
+  ln -s "$other" "$subhome/projects/alpha"
+
+  if FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" design "$subhome" alpha >/dev/null 2>"$err"; then
+    fail "seed accepted a local-only destination that is a different repository"
+  fi
+  grep -F 'is local-only but' "$err" >/dev/null || fail "seed did not name the local-only different-repository case"
+  grep -F 'is not the same repository' "$err" >/dev/null || fail "seed did not explain the different-repository rejection"
+  [ ! -f "$subhome/.fm-secondmate-home" ] || fail "seed marked subhome after a different-repository rejection"
+
+  rm "$subhome/projects/alpha"
+  mkdir -p "$live/sub"
+  ln -s "$live/sub" "$subhome/projects/alpha"
+  if FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" design "$subhome" alpha >/dev/null 2>"$err"; then
+    fail "seed accepted a local-only destination that is only a subdirectory of the source repository"
+  fi
+  grep -F 'is not the same repository' "$err" >/dev/null || fail "seed did not explain the subdirectory rejection"
+  pass "home seeding refuses in-place local-only destinations that are not the same work tree"
+}
+
+test_home_seed_in_place_exemption_is_local_only() {
+  # The same symlinked shape for a direct-PR project still has to resolve inside
+  # the subhome projects directory; the exemption never widens other modes.
+  local home subhome live err
+  home="$TMP_ROOT/in-place-direct-home"
+  subhome="$TMP_ROOT/in-place-direct-subhome"
+  live="$TMP_ROOT/in-place-direct-live/alpha"
+  err="$TMP_ROOT/in-place-direct.err"
+  setup_in_place_local_only "$home" "$subhome" "$live" direct-PR
+  fm_git_add_origin "$live" "$TMP_ROOT/remotes/in-place-direct-alpha.git"
+  ln -s "$live" "$subhome/projects/alpha"
+
+  if FM_HOME="$home" "$ROOT/bin/fm-home-seed.sh" design "$subhome" alpha >/dev/null 2>"$err"; then
+    fail "seed accepted a direct-PR destination resolving outside the subhome projects directory"
+  fi
+  grep -F 'destination must resolve inside the secondmate projects directory' "$err" >/dev/null \
+    || fail "seed did not keep the projects-directory boundary for direct-PR projects"
+  pass "home seeding keeps the projects-directory boundary for non-local-only projects"
 }
 
 test_home_seed_refuses_registry_delimiter_home() {
@@ -1827,6 +1919,9 @@ test_home_seed_refuses_missing_filled_charter
 test_home_seed_refuses_placeholder_charter
 test_home_seed_refuses_empty_charter_fields
 test_home_seed_refuses_local_only_project
+test_home_seed_accepts_in_place_local_only_project
+test_home_seed_refuses_in_place_local_only_different_repo
+test_home_seed_in_place_exemption_is_local_only
 test_home_seed_refuses_registry_delimiter_home
 test_home_seed_refuses_active_home_and_root
 test_home_seed_refuses_home_marked_for_another_id

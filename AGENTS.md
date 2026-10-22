@@ -381,7 +381,7 @@ This idle contract is encoded in the charter brief (section 11), so it travels w
 When a secondmate is created for a domain, the existing main-backlog items that fall under its scope should become its work instead of staying stranded in the main backlog.
 Scope-matching is firstmate's judgment against the secondmate's natural-language scope, not a keyword rule.
 Read `data/backlog.md`, pick queued items that fit the scope, and move them with `bin/fm-backlog-handoff.sh <secondmate-id> <item-key>...`.
-Do not hand off `local-only` items; that work stays with the main firstmate (section 7).
+Do not hand off `local-only` items unless the secondmate home already holds that project in place (`secondmate-provisioning`); otherwise that work stays with the main firstmate (section 7).
 For idempotence, destination validation, and refusal of `## In flight` entries, load `secondmate-provisioning`.
 
 ### Project memory ownership
@@ -475,7 +475,7 @@ Then resolve the secondmate scope.
 Read `data/secondmates.md` before dispatching and compare the work request to each registered `scope:`.
 Route by the nature of the task, not just the project name.
 A project may appear in several `projects:` clone lists, so choose the secondmate whose natural-language scope actually fits the work, such as triage versus feature development.
-If the resolved project is `local-only`, keep the work with the main firstmate even when a secondmate scope sounds relevant.
+If the resolved project is `local-only`, keep the work with the main firstmate even when a secondmate scope sounds relevant, unless that secondmate's home holds the project in place (`secondmate-provisioning`).
 If a secondmate's scope fits, steer that secondmate from an active firstmate session by sending one concise instruction via `FM_HOME=<this-firstmate-home> bin/fm-send.sh <id> '<work request>'` unless `FM_HOME` is already set to the active firstmate home, and let it run the normal lifecycle inside its own home.
 The stable `fm-<id>` label printed by lifecycle commands still works, but exact task ids resolve first through this home's `state/<id>.meta`; pass an explicit backend target containing `:` only when intentionally targeting an endpoint outside this firstmate home.
 `fm-send` is fail-closed: `FM_HOME` must be set, and any target that cannot be resolved through this home's metadata or a well-formed explicit backend target exits non-zero instead of guessing a tmux window.

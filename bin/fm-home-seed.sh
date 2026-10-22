@@ -22,7 +22,8 @@
 #       resolve outside projects/ but never inside the active home or the
 #       firstmate repo), and no origin is required. A local-only project is
 #       refused when its destination is absent (including any "-" home), not a
-#       git work tree, or a different repository.
+#       git work tree, a different repository, or only a subdirectory of the
+#       source repository's work tree.
 #       Seeding is transactional: on validation, clone, init, or registry failure,
 #       generated briefs, new homes, new project clones, and registry edits are
 #       rolled back. Treehouse-acquired homes are returned only when the rollback

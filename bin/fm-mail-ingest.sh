@@ -11,6 +11,7 @@
 #     out/              empty; results to attach to replies go here
 #   then removes the inbox file. The request folder is complete only once its
 #   .ingested marker exists, so a re-run after a failed save resumes safely.
+#   `mail-axi` means the tool FM_MAIL_AXI resolves to, fail closed (fmm_resolve_axi).
 #
 # Defense in depth on top of mail-axi's Gate 2: the stash must name this <req>,
 # carry trust.tier T1 and trust.authAs Internal, have a sender in the
@@ -138,8 +139,8 @@ fi
 
 unzip_lines=()
 if [ "$n_att" -gt 0 ]; then
-  command -v mail-axi >/dev/null 2>&1 || { echo "error mail-axi not found"; exit 1; }
-  if ! mail-axi save-attachments "$GRAPH_ID" --dir "$DIR/in" --mailbox "$FMM_INTAKE" >/dev/null 2>"$DIR/.save.err"; then
+  fmm_resolve_axi || { echo "error $FMM_AXI_ERROR"; exit 1; }
+  if ! "$FMM_AXI" save-attachments "$GRAPH_ID" --dir "$DIR/in" --mailbox "$FMM_INTAKE" >/dev/null 2>"$DIR/.save.err"; then
     echo "error mail-axi save-attachments failed: $(head -n1 "$DIR/.save.err" | tr -cd '[:print:]' | cut -c1-200)"
     exit 1
   fi

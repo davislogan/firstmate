@@ -96,6 +96,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 # shellcheck source=bin/fm-x-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-x-lib.sh"
+# shellcheck source=bin/fm-mail-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-mail-lib.sh"
 # shellcheck source=bin/fm-backend.sh disable=SC1091
 . "$SCRIPT_DIR/fm-backend.sh"
 
@@ -470,10 +472,12 @@ EOF
 #                               already-lower value (X mode's 30) is set, so the
 #                               lower interval wins in either sourcing order
 # Opt-out removes them; steady-state off is silent and writes nothing. Requires
-# jq, python3 (attachment unzip), and mail-axi on PATH. Prints one MAIL line on
-# opt-in, and on opt-out only when it removed artifacts or a dependency is missing.
+# jq and python3 (attachment unzip) on PATH, plus a mail tool that resolves
+# through fmm_resolve_axi (FM_MAIL_AXI, else exactly one mail-axi on PATH).
+# Prints one MAIL line on opt-in, and on opt-out only when it removed artifacts
+# or a dependency is missing.
 mail_mode_setup() {
-  local env_file intake captain shim cadence shim_body cadence_body tool missing
+  local env_file intake captain shim cadence shim_body cadence_body tool missing axi_error
   env_file="$FM_HOME/.env"
   shim="$STATE/mail-watch.check.sh"
   cadence="$CONFIG/mail-mode.env"
@@ -506,14 +510,22 @@ mail_mode_setup() {
   fi
 
   missing=
-  for tool in jq python3 mail-axi; do
+  for tool in jq python3; do
     command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
   done
   case "$missing" in
     *' jq'*) echo "MISSING: jq (install: $(install_cmd jq))" ;;
   esac
+  axi_error=$(
+    FMM_AXI_SETTING=${FM_MAIL_AXI-$(fmx_env_get FM_MAIL_AXI "$env_file")}
+    fmm_resolve_axi || printf '%s' "$FMM_AXI_ERROR"
+  )
   if [ -n "$missing" ]; then
-    mail_mode_off "missing${missing}; install and rerun bootstrap" loud
+    mail_mode_off "missing${missing}${axi_error:+; $axi_error}; install and rerun bootstrap" loud
+    return 0
+  fi
+  if [ -n "$axi_error" ]; then
+    mail_mode_off "$axi_error; fix and rerun bootstrap" loud
     return 0
   fi
 

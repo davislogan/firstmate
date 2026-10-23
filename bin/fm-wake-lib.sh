@@ -96,6 +96,20 @@ fm_watcher_healthy() {
   return 0
 }
 
+# fm_watcher_attach_fresh <state> [attach-grace]
+# A watcher launched detached by bin/fm-watch-arm.sh marks its lock with a
+# `detached` file; its only path to wake the primary is an attached arm, which
+# touches state/.watch-attached every attach poll. 0 when the lock holder is not
+# detached (a coupled, checkpoint, or daemon-owned watcher delivers its own
+# wakes) or an attach beacon is fresh within attach-grace
+# (FM_WATCH_ATTACH_GRACE, default 30s); 1 for a detached watcher nobody is
+# attached to. Pair with fm_watcher_healthy, which owns lock and beacon health.
+fm_watcher_attach_fresh() {
+  local state=$1 grace=${2:-${FM_WATCH_ATTACH_GRACE:-30}}
+  [ -e "$state/.watch.lock/detached" ] || return 0
+  [ "$(fm_path_age "$state/.watch-attached")" -lt "$grace" ]
+}
+
 fm_lock_clean_known_files() {
   local lockdir=$1
   rm -f \
@@ -103,6 +117,7 @@ fm_lock_clean_known_files() {
     "$lockdir/fm-home" \
     "$lockdir/pid-identity" \
     "$lockdir/watcher-path" \
+    "$lockdir/detached" \
     2>/dev/null || true
 }
 

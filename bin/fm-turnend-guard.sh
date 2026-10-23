@@ -78,7 +78,14 @@ GIT_COMMON_DIR=$(git -C "$FM_ROOT" rev-parse --git-common-dir 2>/dev/null) || ex
 
 fm_supervision_status "$STATE" "$GRACE"
 [ "$FM_SUP_IN_FLIGHT" -gt 0 ] || exit 0
-fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME" && exit 0
+# A healthy watcher delivers wakes only if it owns its exit path or an arm is
+# attached to it; a detached watcher nobody is attached to keeps queueing wakes
+# that never notify the primary, so that turn would end blind too.
+detail="no live watcher holds this home lock (last beat: $FM_SUP_BEACON_DESC)"
+if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
+  fm_watcher_attach_fresh "$STATE" && exit 0
+  detail="the live watcher (pid $FM_WATCHER_HEALTHY_PID) has no attached arm to deliver its wakes"
+fi
 
 afk=0
 [ -e "$STATE/.afk" ] && afk=1
@@ -90,7 +97,7 @@ rule='━━━━━━━━━━━━━━━━━━━━━━━━�
 {
   printf '●%s\n' "$rule"
   printf '●  TURN WOULD END BLIND - SUPERVISION IS OFF\n'
-  printf '●  %s task(s) in flight, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_IN_FLIGHT" "$FM_SUP_BEACON_DESC"
+  printf '●  %s task(s) in flight, but %s.\n' "$FM_SUP_IN_FLIGHT" "$detail"
   printf '●  %s\n' "$REASON"
   printf '●%s\n' "$rule"
 } >&2

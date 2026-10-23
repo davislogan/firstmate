@@ -241,6 +241,35 @@ test_hook_blocks_with_live_lock_and_stale_beacon() {
   pass "fm-turnend-guard: blocks on a live watcher lock with an ancient beacon"
 }
 
+test_hook_detached_watcher_requires_attached_arm() {
+  local dir pid identity out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-detached-attach")
+  : > "$dir/state/task1.meta"
+  sleep 60 &
+  pid=$!
+  identity=$(watcher_identity "$dir" "$pid") || {
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    fail "could not identify live watcher holder"
+  }
+  record_watcher_lock "$dir" "$pid" "$identity"
+  : > "$dir/state/.watch.lock/detached"
+  touch "$dir/state/.last-watcher-beat"
+  touch -t 202001010000 "$dir/state/.watch-attached"
+  out=$(run_hook "$dir" false); status=$?
+  touch "$dir/state/.watch-attached"
+  local out2 status2
+  out2=$(run_hook "$dir" false); status2=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "hook must block when a healthy detached watcher has no attached arm"
+  assert_contains "$out" "has no attached arm to deliver its wakes" "block must name the missing attach"
+  assert_contains "$out" "$REQUIRED_REASON" "block reason must contain the exact required instruction"
+  expect_code 0 "$status2" "hook must allow a healthy detached watcher with a fresh attach beacon"
+  [ -z "$out2" ] || fail "hook produced output despite an attached detached watcher: $out2"
+  pass "fm-turnend-guard: a detached watcher counts only while an arm is attached"
+}
+
 test_hook_blocks_when_unhealthy_in_primary() {
   local dir out status
   dir=$(make_primary_dir "$TMP_ROOT/hook-block")
@@ -609,6 +638,7 @@ test_hook_blocks_when_fresh_beacon_has_no_live_lock
 test_hook_blocks_when_dead_lock_has_fresh_beacon
 test_hook_silent_with_live_lock_and_fresh_beacon
 test_hook_blocks_with_live_lock_and_stale_beacon
+test_hook_detached_watcher_requires_attached_arm
 test_hook_blocks_when_unhealthy_in_primary
 test_hook_blocks_from_fm_home_state
 test_hook_x_mode_reason_sources_cadence

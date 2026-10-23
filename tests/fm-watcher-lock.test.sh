@@ -14,6 +14,9 @@ DRAIN="$ROOT/bin/fm-wake-drain.sh"
 LIB="$ROOT/bin/fm-wake-lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-watcher-lock-tests)
+# Detached watchers outlive their arms by design, so stop any a case left
+# behind before the scratch dirs go away (stop_case_watchers, below).
+trap 'stop_case_watchers; rm -rf "$TMP_ROOT"' EXIT
 
 
 test_singleton_start() {
@@ -561,34 +564,199 @@ test_arm_starts_and_self_heals() {
   pass "arm starts+confirms a fresh watcher on a clean lock and self-heals a dead-pid lock (never healthy off a dead pid)"
 }
 
-test_arm_hup_cleans_child_and_temp_output() {
-  local dir state fakebin armout i armpid lock_pid status
-  dir=$(make_case arm-hup-cleanup)
+# Wait until <file> shows <fixed-string>, up to <limit> tenths of a second.
+wait_for_line() {  # <file> <fixed-string> [limit]
+  local file=$1 want=$2 limit=${3:-80} i=0
+  while [ "$i" -lt "$limit" ]; do
+    grep -qF "$want" "$file" 2>/dev/null && return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# Wait for <pid> (not necessarily our child) to be gone, up to <limit> tenths.
+wait_for_gone() {  # <pid> [limit]
+  local pid=$1 limit=${2:-80} i=0
+  while [ "$i" -lt "$limit" ]; do
+    is_live_non_zombie "$pid" || return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# Count live detached watchers for <state>: every detached watcher writes its
+# output to .watch-cycle-<pid>.out, so a live fm-watch.sh pid behind one of
+# those files is a running watcher for this home.
+count_live_detached_watchers() {  # <state>
+  local state=$1 f pid n=0
+  for f in "$state"/.watch-cycle-*.out; do
+    [ -e "$f" ] || continue
+    pid=${f##*/.watch-cycle-}
+    pid=${pid%.out}
+    is_live_non_zombie "$pid" || continue
+    ps -p "$pid" -o args= 2>/dev/null | grep -q 'fm-watch\.sh' || continue
+    n=$((n + 1))
+  done
+  printf '%s\n' "$n"
+}
+
+# Detached watchers outlive their arms by design; stop any a test left behind
+# (only pids recorded in this suite's own scratch state dirs).
+stop_case_watchers() {
+  local lockpid pid
+  for lockpid in "$TMP_ROOT"/*/state/.watch.lock/pid; do
+    [ -e "$lockpid" ] || continue
+    pid=$(cat "$lockpid" 2>/dev/null || true)
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    ps -p "$pid" -o args= 2>/dev/null | grep -q 'fm-watch\.sh' || continue
+    kill "$pid" 2>/dev/null || true
+  done
+}
+
+test_arm_death_leaves_detached_watcher_reattachable() {
+  # Reaping the arm (HUP from a closed terminal, TERM from a harness task limit,
+  # KILL from anything) must end only the attach: the watcher keeps its lock,
+  # keeps beating, and a fresh arm attaches to it instead of starting another.
+  local sig dir state fakebin armout armout2 armpid armpid2 lock_pid status
+  for sig in HUP TERM KILL; do
+    dir=$(make_case "arm-death-$sig")
+    state="$dir/state"
+    fakebin="$dir/fakebin"
+    armout="$dir/arm.out"
+    armout2="$dir/arm2.out"
+    PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_ATTACH_POLL=0.1 "$WATCH_ARM" > "$armout" &
+    armpid=$!
+    wait_for_line "$armout" 'watcher: started pid=' || fail "arm ($sig) did not start a watcher: $(cat "$armout")"
+    lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+    [ -e "$state/.watch.lock/detached" ] || fail "arm ($sig) started a watcher without the detached lock marker"
+    kill -"$sig" "$armpid" 2>/dev/null || fail "could not send $sig to arm"
+    wait_for_exit "$armpid" 80
+    status=$?
+    [ "$status" -ne 0 ] || fail "arm ($sig) exited zero after being signalled"
+    touch -t 200001010000 "$state/.last-watcher-beat"
+    sleep 1
+    is_live_non_zombie "$lock_pid" || fail "killing the arm with $sig killed the watcher"
+    [ "$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_path_age "$2"' _ "$LIB" "$state/.last-watcher-beat")" -lt 5 ] || fail "watcher stopped beating after its arm got $sig"
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$lock_pid" ] || fail "watcher lost its lock after its arm got $sig"
+    PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_ARM_ATTACH_POLL=0.1 "$WATCH_ARM" > "$armout2" &
+    armpid2=$!
+    wait_for_line "$armout2" "watcher: attached pid=$lock_pid" || fail "fresh arm ($sig) did not re-attach to the surviving watcher: $(cat "$armout2")"
+    ! grep -qF 'watcher: started' "$armout2" || fail "fresh arm ($sig) started a second watcher"
+    kill "$lock_pid" 2>/dev/null || true
+    wait_for_exit "$armpid2" 80
+    status=$?
+    [ "$status" -ne 124 ] || fail "re-attached arm ($sig) never returned after the watcher ended"
+  done
+  pass "arm death (HUP, TERM, KILL) leaves the detached watcher beating and re-attachable"
+}
+
+test_concurrent_arms_leave_one_watcher() {
+  local dir state fakebin n i pids pid live wpids
+  dir=$(make_case arm-concurrency)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  n=8
+  pids=
+  i=1
+  while [ "$i" -le "$n" ]; do
+    PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_ATTACH_POLL=0.1 "$WATCH_ARM" > "$dir/arm.$i.out" 2>&1 &
+    pids="$pids $!"
+    i=$((i + 1))
+  done
+  i=1
+  while [ "$i" -le "$n" ]; do
+    wait_for_line "$dir/arm.$i.out" 'watcher: ' || fail "arm $i reported nothing"
+    ! grep -qF 'watcher: FAILED' "$dir/arm.$i.out" || fail "arm $i failed under concurrency: $(cat "$dir/arm.$i.out")"
+    i=$((i + 1))
+  done
+  # Give any transient duplicate a few polls to self-evict before counting.
+  sleep 1
+  live=$(count_live_detached_watchers "$state")
+  [ "$live" -eq 1 ] || fail "expected exactly one live watcher after $n concurrent arms, got $live"
+  wpids=$(cat "$dir"/arm.*.out | sed -n 's/^watcher: \(started\|attached\) pid=\([0-9]*\).*/\2/p' | sort -u)
+  [ "$(printf '%s\n' "$wpids" | awk 'NF' | wc -l | tr -d ' ')" -eq 1 ] || fail "concurrent arms named more than one watcher: $wpids"
+  [ "$wpids" = "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" ] || fail "arms did not converge on the lock holder"
+  for pid in $pids; do
+    is_live_non_zombie "$pid" || fail "an arm exited while the single watcher was still healthy"
+  done
+  for pid in $pids; do kill -KILL "$pid" 2>/dev/null || true; done
+  for pid in $pids; do wait "$pid" 2>/dev/null || true; done
+  is_live_non_zombie "$wpids" || fail "killing every arm killed the watcher"
+  kill "$wpids" 2>/dev/null || true
+  pass "N concurrent arms leave exactly one detached watcher"
+}
+
+test_detached_watcher_expires_when_idle_and_unattached() {
+  local dir state fakebin armout armpid lock_pid ttl start elapsed
+  dir=$(make_case arm-detached-expiry)
   state="$dir/state"
   fakebin="$dir/fakebin"
   armout="$dir/arm.out"
-  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" &
+  ttl=2
+  : > "$state/task.meta"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_ATTACH_POLL=0.1 FM_WATCH_DETACHED_TTL=$ttl "$WATCH_ARM" > "$armout" &
   armpid=$!
-  i=0
-  while [ "$i" -lt 80 ]; do
-    grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
-    sleep 0.1
-    i=$((i + 1))
-  done
-  grep -qF 'watcher: started pid=' "$armout" || fail "arm did not start before HUP cleanup check"
+  wait_for_line "$armout" 'watcher: started pid=' || fail "arm did not start a watcher: $(cat "$armout")"
   lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
-  kill -HUP "$armpid" 2>/dev/null || fail "could not send HUP to arm"
-  wait_for_exit "$armpid" 80
-  status=$?
-  [ "$status" -eq 129 ] || fail "arm did not exit with HUP status (got $status)"
-  i=0
-  while [ "$i" -lt 80 ] && is_live_non_zombie "$lock_pid"; do
-    sleep 0.1
-    i=$((i + 1))
-  done
-  ! is_live_non_zombie "$lock_pid" || fail "HUP cleanup left watcher child running"
-  ! ls "$state"/.watch-arm-output.* >/dev/null 2>&1 || fail "HUP cleanup left temp output behind"
-  pass "arm cleans child watcher and temp output on HUP"
+  # Attached with nothing in flight: the attach beacon keeps it alive past the TTL.
+  rm -f "$state/task.meta"
+  sleep $((ttl + 2))
+  is_live_non_zombie "$lock_pid" || fail "detached watcher expired while an arm was still attached"
+  kill -KILL "$armpid" 2>/dev/null || true
+  wait "$armpid" 2>/dev/null || true
+  # Unattached but with work in flight: it must keep supervising past the TTL.
+  : > "$state/task.meta"
+  sleep $((ttl + 2))
+  is_live_non_zombie "$lock_pid" || fail "detached watcher expired with a task still in flight"
+  # Nothing in flight and nobody attached: it ends itself within the bound.
+  rm -f "$state/task.meta"
+  start=$(date +%s)
+  wait_for_gone "$lock_pid" $(((ttl + 4) * 10)) || fail "idle unattached detached watcher outlived its ${ttl}s bound"
+  elapsed=$(( $(date +%s) - start ))
+  [ "$elapsed" -ge $((ttl - 1)) ] || fail "detached watcher expired too early (${elapsed}s < ${ttl}s bound)"
+  [ ! -e "$state/.watch.lock" ] || fail "expired watcher left its lock behind"
+  grep -qF 'detached watcher expired' "$state/.watch-triage.log" || fail "expiry was not logged"
+  pass "idle unattached detached watcher expires within FM_WATCH_DETACHED_TTL, and not while attached or with work in flight"
+}
+
+test_unattached_wake_is_queued_and_drained() {
+  # A wake that lands while no arm is attached must still reach firstmate: the
+  # watcher queues it before exiting, the next arm returns it at once instead of
+  # blocking on a new cycle, and fm-wake-drain.sh drains it.
+  local dir state fakebin armout armout2 drain_out armpid lock_pid check_file rc
+  dir=$(make_case arm-unattached-wake)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  armout2="$dir/arm2.out"
+  drain_out="$dir/drain.out"
+  check_file="$state/task.check.sh"
+  : > "$state/task.meta"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=1 FM_HEARTBEAT=999999 FM_ARM_ATTACH_POLL=0.1 "$WATCH_ARM" > "$armout" &
+  armpid=$!
+  wait_for_line "$armout" 'watcher: started pid=' || fail "arm did not start a watcher: $(cat "$armout")"
+  lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  kill -KILL "$armpid" 2>/dev/null || true
+  wait "$armpid" 2>/dev/null || true
+  cat > "$check_file" <<'SH'
+#!/usr/bin/env bash
+printf 'merged: https://example.test/pr/9\n'
+SH
+  chmod +x "$check_file"
+  wait_for_gone "$lock_pid" 80 || fail "unattached watcher did not exit on its actionable wake"
+  [ "$(cat "$state/.watch-cycle-$lock_pid.rc" 2>/dev/null || true)" = 0 ] || fail "unattached watcher did not record a clean wake exit"
+  rc=0
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_ARM_CONFIRM_TIMEOUT=3 "$WATCH_ARM" > "$armout2" || rc=$?
+  [ "$rc" -eq 0 ] || fail "arm over a pending queue exited $rc: $(cat "$armout2")"
+  grep -F "check: $check_file: merged: https://example.test/pr/9" "$armout2" >/dev/null || fail "arm did not return the queued wake: $(cat "$armout2")"
+  ! grep -qE 'watcher: (started|attached)' "$armout2" || fail "arm blocked on a new cycle while wakes were queued"
+  rm -f "$check_file"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain failed"
+  grep "$(printf '\tcheck\t')" "$drain_out" | grep -F 'merged: https://example.test/pr/9' >/dev/null || fail "unattached wake was not drained: $(cat "$drain_out")"
+  [ ! -s "$state/.wake-queue" ] || fail "drain left the queue non-empty"
+  pass "a wake raised while no arm is attached is queued, returned by the next arm, and drained"
 }
 
 test_arm_propagates_immediate_wake_before_confirmation() {
@@ -724,7 +892,10 @@ test_watch_restart_reports_healthy_peer_without_attaching
 test_watcher_self_evicts_on_lock_takeover
 test_arm_attaches_and_waits_for_live_fresh_watcher
 test_arm_starts_and_self_heals
-test_arm_hup_cleans_child_and_temp_output
+test_arm_death_leaves_detached_watcher_reattachable
+test_concurrent_arms_leave_one_watcher
+test_detached_watcher_expires_when_idle_and_unattached
+test_unattached_wake_is_queued_and_drained
 test_arm_propagates_immediate_wake_before_confirmation
 test_arm_waits_for_peer_beacon_after_child_stands_down
 test_arm_fails_loud_when_no_fresh_watcher_confirmable

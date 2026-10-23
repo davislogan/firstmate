@@ -100,14 +100,58 @@ if ! fm_lock_try_acquire "$WATCH_LOCK"; then
   fi
   exit 0
 fi
-trap 'fm_lock_release "$WATCH_LOCK"' EXIT
 # This watcher's own pid, as recorded in the lock by fm_lock_claim (which writes
 # ${BASHPID:-$$} from this same main shell). Read directly, never via a command
 # substitution, so it matches the stored holder pid for the self-eviction check.
 WATCHER_PID=${BASHPID:-$$}
+# Detached mode: bin/fm-watch-arm.sh launches the watcher in its own session
+# with FM_WATCH_DETACHED=1 and stdout/stderr on state/.watch-cycle-<pid>.out, so
+# reaping the arm never takes supervision down with it. Arms ATTACH to this
+# process instead of owning it: each attached arm touches state/.watch-attached
+# while it waits, and on exit this watcher records its status in
+# state/.watch-cycle-<pid>.rc so attachers can replay the cycle's reason lines
+# and exit code. The `detached` lock marker tells fm_watcher_attach_fresh that
+# an attached arm is this watcher's only wake path.
+# Expiry: a detached watcher has no parent to reap it, so it ends itself once
+# nothing needs it - no state/*.meta in flight AND no arm attached, both for at
+# least FM_WATCH_DETACHED_TTL seconds (default 900). In-flight work keeps it
+# alive even unattached, because its actionable wakes still land in the durable
+# queue for bin/fm-wake-drain.sh; an attach beacon keeps it alive for an idle
+# fleet whose primary is still supervising (X or mail mode). Wall-clock idleness
+# rather than a cycle count keeps the bound independent of FM_POLL. Watchers
+# started any other way (codex checkpoints, the away-mode daemon, a direct run)
+# are owned by their parent and never expire on their own.
+DETACHED=${FM_WATCH_DETACHED:-0}
+DETACHED_TTL=${FM_WATCH_DETACHED_TTL:-900}
+ATTACH_BEAT="$STATE/.watch-attached"
+on_exit() {
+  local rc=$?
+  if [ "$DETACHED" = 1 ]; then
+    printf '%s\n' "$rc" > "$STATE/.watch-cycle-$WATCHER_PID.rc" 2>/dev/null || true
+  fi
+  fm_lock_release "$WATCH_LOCK"
+}
+trap on_exit EXIT
 printf '%s\n' "$FM_HOME" > "$WATCH_LOCK/fm-home" || true
 printf '%s\n' "$WATCH_PATH" > "$WATCH_LOCK/watcher-path" || true
 fm_pid_identity "$WATCHER_PID" > "$WATCH_LOCK/pid-identity" 2>/dev/null || true
+[ "$DETACHED" = 1 ] && { : > "$WATCH_LOCK/detached" || true; }
+detached_needed_at=$(date +%s)
+
+# detached_expired: 0 when a detached watcher has gone FM_WATCH_DETACHED_TTL
+# seconds with no in-flight task and no attached arm (see Detached mode above).
+detached_expired() {
+  local now meta
+  [ "$DETACHED" = 1 ] || return 1
+  now=$(date +%s)
+  for meta in "$STATE"/*.meta; do
+    [ -e "$meta" ] || continue
+    detached_needed_at=$now
+    return 1
+  done
+  [ $((now - detached_needed_at)) -ge "$DETACHED_TTL" ] || return 1
+  [ "$(fm_path_age "$ATTACH_BEAT")" -ge "$DETACHED_TTL" ]
+}
 
 # Portable stat. macOS (BSD) stat uses `-f <fmt>`; Linux (GNU) stat uses `-c <fmt>`.
 # Do NOT use the `stat -f <fmt> ... || stat -c <fmt> ...` fallback form: on Linux
@@ -465,6 +509,10 @@ while :; do
   # This makes any duplicate self-resolve within one poll instead of persisting
   # and doubling every wake.
   if [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" != "$WATCHER_PID" ]; then
+    exit 0
+  fi
+  if detached_expired; then
+    triage_log "detached watcher expired: no in-flight task and no attached arm for ${DETACHED_TTL}s"
     exit 0
   fi
 

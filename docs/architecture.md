@@ -37,6 +37,7 @@ That block owns the live wait shape for the running primary harness: Claude and 
 Started or attached, it stays live until that cycle ends and then replays the cycle's wake reason lines, so background-notify harnesses do not get an empty false wake from a healthy no-op exit.
 If wakes are already queued when it runs, it prints them and exits at once instead of starting a cycle.
 A detached watcher with no in-flight task and no attached arm for `FM_WATCH_DETACHED_TTL` seconds ends itself.
+The away-mode daemon and Codex checkpoints may take over a detached watcher with no attached arm; AGENTS.md section 8 owns that handover rule.
 Its `--restart` mode signals only the watcher recorded in the current home's `state/.watch.lock`, so restarting one home cannot kill sibling secondmate watchers.
 A pull-based guard (`bin/fm-guard.sh`) warns through supervision tool output if the primary checkout is tangled, or if tasks are in flight and that watcher stops running or queued wakes are waiting to be drained.
 The drain script calls that guard after emptying the queue, which avoids repeating the queued-wakes warning for records it just consumed while still warning on stale watcher liveness.

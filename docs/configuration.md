@@ -402,6 +402,7 @@ FM_ARM_CONFIRM_TIMEOUT=10   # seconds fm-watch-arm waits to confirm a fresh watc
 FM_ARM_ATTACH_POLL=0.5  # seconds between checks while fm-watch-arm is attached to a healthy watcher cycle; each check refreshes state/.watch-attached
 FM_WATCH_ATTACH_GRACE=30   # seconds an attach beacon stays fresh; the primary turn-end guard treats a detached watcher with an older beacon as having no wake path
 FM_WATCH_DETACHED_TTL=900  # seconds a detached watcher survives with no in-flight task and no attached arm before it exits on its own
+FM_WATCH_TAKEOVER=         # set only by fm-supervise-daemon.sh and fm-watch-checkpoint.sh to the taker's name; lets that watcher start take over a detached, unattached holder (AGENTS.md section 8); never set it by hand or in fm-watch-arm.sh
 FM_OPENCODE_ARM_READY_TIMEOUT_MS=12000   # milliseconds the OpenCode primary watcher plugin waits for an arm attempt to report started, healthy, wake, or failure
 FM_WATCHER_STALE_GRACE=300   # defaults to FM_GUARD_GRACE; seconds a live watcher lock may have a stale beacon before re-arm errors
 FM_SIGNAL_GRACE=30      # seconds to coalesce nearby status and turn-end signals into one wake

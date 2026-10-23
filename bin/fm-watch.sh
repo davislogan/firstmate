@@ -81,7 +81,71 @@ mkdir -p "$STATE"
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
 WATCHER_STALE_GRACE=${FM_WATCHER_STALE_GRACE:-${FM_GUARD_GRACE:-300}}
-if ! fm_lock_try_acquire "$WATCH_LOCK"; then
+TRIAGE_LOG="$STATE/.watch-triage.log"
+TRIAGE_LOG_MAX_BYTES=${FM_WATCH_TRIAGE_LOG_MAX_BYTES:-262144}
+
+# Append one line to the triage debug log explaining an absorbed (benign) wake,
+# size-capped so a long benign stretch cannot grow it without bound. Best-effort:
+# a logging hiccup never affects supervision.
+triage_log() {
+  local sz
+  printf '[%s] %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$1" >> "$TRIAGE_LOG" 2>/dev/null || return 0
+  sz=$(wc -c < "$TRIAGE_LOG" 2>/dev/null | tr -d '[:space:]')
+  case "$sz" in ''|*[!0-9]*) return 0 ;; esac
+  if [ "$sz" -ge "$TRIAGE_LOG_MAX_BYTES" ]; then
+    tail -n 2000 "$TRIAGE_LOG" > "$TRIAGE_LOG.tmp" 2>/dev/null && mv -f "$TRIAGE_LOG.tmp" "$TRIAGE_LOG" 2>/dev/null
+    rm -f "$TRIAGE_LOG.tmp" 2>/dev/null || true
+  fi
+}
+
+# Takeover (FM_WATCH_TAKEOVER=<taker>, see the header): a non-detached start
+# may evict a detached watcher nobody is attached to. Every gate must hold: the
+# lock still names this live pid, carries the `detached` marker, matches this
+# home and the pid's recorded identity, and has no fresh attach beacon.
+takeover_holder_eligible() {
+  local pid=$1
+  fm_pid_alive "$pid" || return 1
+  [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "$pid" ] || return 1
+  [ -e "$WATCH_LOCK/detached" ] || return 1
+  fm_watcher_lock_matches_pid "$STATE" "$WATCH_PATH" "$pid" "$FM_HOME" || return 1
+  ! fm_watcher_attach_fresh "$STATE"
+}
+
+# takeover_detached_holder <pid>: 0 once this process holds the lock after
+# evicting exactly that one pid; 1 (nothing signalled, or the lock went to
+# someone else) leaves the caller on the ordinary "already running" path.
+takeover_detached_holder() {
+  local pid=$1 taker=${FM_WATCH_TAKEOVER:-} beat_age attach_age i msg
+  case "$taker" in ''|0) return 1 ;; esac
+  [ "${FM_WATCH_DETACHED:-0}" = 1 ] && return 1
+  takeover_holder_eligible "$pid" || return 1
+  beat_age=$(fm_path_age "$STATE/.last-watcher-beat")
+  attach_age=$(fm_path_age "$STATE/.watch-attached")
+  takeover_holder_eligible "$pid" || return 1
+  kill -TERM "$pid" 2>/dev/null || return 1
+  i=0
+  while [ "$i" -lt 50 ] && fm_pid_alive "$pid" \
+    && [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "$pid" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if fm_pid_alive "$pid" && [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "$pid" ] \
+    && fm_watcher_lock_matches_pid "$STATE" "$WATCH_PATH" "$pid" "$FM_HOME"; then
+    kill -KILL "$pid" 2>/dev/null || true
+    i=0
+    while [ "$i" -lt 20 ] && fm_pid_alive "$pid"; do
+      sleep 0.1
+      i=$((i + 1))
+    done
+  fi
+  msg="watcher takeover: $taker evicted detached watcher pid $pid (beacon ${beat_age}s, attach beacon ${attach_age}s)"
+  triage_log "$msg"
+  echo "$msg" >&2
+  fm_lock_try_acquire "$WATCH_LOCK"
+}
+
+if ! fm_lock_try_acquire "$WATCH_LOCK" \
+  && ! { [ -n "${FM_LOCK_HELD_PID:-}" ] && takeover_detached_holder "$FM_LOCK_HELD_PID"; }; then
   BEAT="$STATE/.last-watcher-beat"
   if [ -n "${FM_LOCK_HELD_PID:-}" ]; then
     if [ -e "$BEAT" ]; then
@@ -121,6 +185,14 @@ WATCHER_PID=${BASHPID:-$$}
 # rather than a cycle count keeps the bound independent of FM_POLL. Watchers
 # started any other way (codex checkpoints, the away-mode daemon, a direct run)
 # are owned by their parent and never expire on their own.
+# Takeover: AGENTS.md section 8 owns the rule. A start with FM_WATCH_TAKEOVER
+# set to the taker's name (only bin/fm-supervise-daemon.sh and
+# bin/fm-watch-checkpoint.sh set it; bin/fm-watch-arm.sh never does, and a
+# detached watcher ignores it) that finds the lock held by this home's
+# identity-matched, detached, unattached watcher sends that one pid TERM (KILL
+# only if it keeps the lock past ~5s), logs the eviction to stderr and
+# state/.watch-triage.log, and acquires the lock through the normal path. Any
+# failed gate leaves the ordinary "watcher: already running" result.
 DETACHED=${FM_WATCH_DETACHED:-0}
 DETACHED_TTL=${FM_WATCH_DETACHED_TTL:-900}
 ATTACH_BEAT="$STATE/.watch-attached"
@@ -199,28 +271,12 @@ SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trai
 # daemon owns triage, so this watcher reverts to one-shot (enqueue + exit on every
 # wake) and never double-triages - and never runs the costly provably-working read.
 STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provably-working stale escalates as a possible wedge
-TRIAGE_LOG="$STATE/.watch-triage.log"
-TRIAGE_LOG_MAX_BYTES=${FM_WATCH_TRIAGE_LOG_MAX_BYTES:-262144}
 
 # afk_present: 0 while the away-mode flag exists. When set, the daemon wraps this
 # watcher and owns triage, so the watcher must behave one-shot (enqueue + exit on
 # every wake) and let the daemon classify - never absorb here, or the daemon's
 # digest/injection layer would never see the wake.
 afk_present() { [ -e "$STATE/.afk" ]; }
-
-# Append one line to the triage debug log explaining an absorbed (benign) wake,
-# size-capped so a long benign stretch cannot grow it without bound. Best-effort:
-# a logging hiccup never affects supervision.
-triage_log() {
-  local sz
-  printf '[%s] %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$1" >> "$TRIAGE_LOG" 2>/dev/null || return 0
-  sz=$(wc -c < "$TRIAGE_LOG" 2>/dev/null | tr -d '[:space:]')
-  case "$sz" in ''|*[!0-9]*) return 0 ;; esac
-  if [ "$sz" -ge "$TRIAGE_LOG_MAX_BYTES" ]; then
-    tail -n 2000 "$TRIAGE_LOG" > "$TRIAGE_LOG.tmp" 2>/dev/null && mv -f "$TRIAGE_LOG.tmp" "$TRIAGE_LOG" 2>/dev/null
-    rm -f "$TRIAGE_LOG.tmp" 2>/dev/null || true
-  fi
-}
 
 hash_pane() {
   if command -v md5 >/dev/null 2>&1; then md5 -q; else md5sum | cut -d' ' -f1; fi

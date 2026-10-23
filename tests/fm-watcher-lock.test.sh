@@ -602,6 +602,17 @@ count_live_detached_watchers() {  # <state>
   printf '%s\n' "$n"
 }
 
+# Wait until <state> has exactly <n> live detached watchers, up to 5s.
+wait_for_detached_count() {  # <state> <n>
+  local i=0
+  while [ "$i" -lt 50 ]; do
+    [ "$(count_live_detached_watchers "$1")" -eq "$2" ] && return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
 # Detached watchers outlive their arms by design; stop any a test left behind
 # (only pids recorded in this suite's own scratch state dirs).
 stop_case_watchers() {
@@ -846,9 +857,140 @@ test_arm_fails_loud_when_no_fresh_watcher_confirmable() {
   ! grep -qE 'watcher: (healthy|attached)' "$armout" || fail "arm reported attached/healthy off a stale beacon"
   ! grep -qF 'watcher: started' "$armout" || fail "arm falsely reported started"
   is_live_non_zombie "$live" || fail "arm killed the unrelated live lock holder"
+  wait_for_detached_count "$state" 0 || fail "arm left its unconfirmed watcher running after FAILED"
   kill "$live" 2>/dev/null || true
   wait "$live" 2>/dev/null || true
-  pass "arm reports FAILED and exits non-zero when no fresh watcher can be confirmed"
+  pass "arm reports FAILED, exits non-zero, and stops its unconfirmed watcher when no fresh watcher can be confirmed"
+}
+
+# Start a real watcher holding <dir>'s lock (detached when <detached> is 1) and
+# wait until its lock records identity and its beacon is fresh; sets HOLDER_PID.
+HOLDER_PID=
+start_lock_holder() {  # <dir> <detached>
+  local dir=$1 detached=$2 pid i
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_WATCH_DETACHED="$detached" FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$dir/holder.out" 2>&1 &
+  pid=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    [ "$(cat "$dir/state/.watch.lock/pid" 2>/dev/null || true)" = "$pid" ] \
+      && [ -s "$dir/state/.watch.lock/pid-identity" ] && [ -e "$dir/state/.last-watcher-beat" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  HOLDER_PID=$pid
+}
+
+# Run one bounded watcher start against <dir> with the given extra env; output
+# lands in <dir>/taker.out and <dir>/taker.err. Sets TAKER_PID.
+TAKER_PID=
+start_taker() {  # <dir> [VAR=value...]
+  local dir=$1
+  shift
+  env "$@" PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$dir/taker.out" 2> "$dir/taker.err" &
+  TAKER_PID=$!
+}
+
+backdate_attach() { touch -t 200001010000 "$1/state/.watch-attached"; }
+
+test_takeover_evicts_unattached_detached_holder() {
+  local dir state holder taker i
+  dir=$(make_case takeover-stale-attach)
+  state="$dir/state"
+  start_lock_holder "$dir" 1
+  holder=$HOLDER_PID
+  [ -e "$state/.watch.lock/detached" ] || fail "seed detached watcher did not mark its lock"
+  backdate_attach "$dir"
+  start_taker "$dir" FM_WATCH_TAKEOVER=test-taker
+  taker=$TAKER_PID
+  wait_for_gone "$holder" 100 || fail "opted-in start did not evict the unattached detached holder"
+  i=0
+  while [ "$i" -lt 80 ]; do
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$taker" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$taker" ] || fail "taker does not hold the lock after takeover"
+  is_live_non_zombie "$taker" || fail "taker exited instead of supervising"
+  [ ! -e "$state/.watch.lock/detached" ] || fail "taker kept the detached marker"
+  grep -F "watcher takeover: test-taker evicted detached watcher pid $holder" "$state/.watch-triage.log" >/dev/null || fail "takeover was not logged to the triage log"
+  grep -F "watcher takeover: test-taker evicted detached watcher pid $holder" "$dir/taker.err" >/dev/null || fail "takeover was not reported on stderr"
+  grep -E 'beacon [0-9]+s, attach beacon [0-9]+s' "$dir/taker.err" >/dev/null || fail "takeover line did not name beacon ages: $(cat "$dir/taker.err")"
+  kill "$taker" 2>/dev/null || true
+  wait "$taker" 2>/dev/null || true
+  pass "opted-in start takes over a detached watcher whose attach beacon is stale, and logs it"
+}
+
+test_takeover_refuses_unsafe_holders() {
+  # Every refusal must leave the holder alive and the start on the ordinary
+  # "already running" path: a fresh attach beacon (an arm attaching now), no
+  # opt-in (plain start and fm-watch-arm.sh), an opted-in start that is itself
+  # detached, a lock naming another home or a mismatched identity, and a
+  # holder that is not detached.
+  local row dir state holder taker status armpid
+  for row in fresh-attach no-opt-in detached-taker other-home bad-identity non-detached; do
+    dir=$(make_case "takeover-refuse-$row")
+    state="$dir/state"
+    if [ "$row" = non-detached ]; then
+      start_lock_holder "$dir" 0
+    else
+      start_lock_holder "$dir" 1
+    fi
+    holder=$HOLDER_PID
+    is_live_non_zombie "$holder" || fail "($row) seed watcher is not running"
+    backdate_attach "$dir"
+    case "$row" in
+      fresh-attach) touch "$state/.watch-attached" ;;
+      other-home) printf '%s\n' "$TMP_ROOT/another-home" > "$state/.watch.lock/fm-home" ;;
+      bad-identity) printf '%s\n' "not this watcher" > "$state/.watch.lock/pid-identity" ;;
+    esac
+    case "$row" in
+      no-opt-in) start_taker "$dir" ;;
+      detached-taker) start_taker "$dir" FM_WATCH_TAKEOVER=test-taker FM_WATCH_DETACHED=1 ;;
+      *) start_taker "$dir" FM_WATCH_TAKEOVER=test-taker ;;
+    esac
+    taker=$TAKER_PID
+    wait_for_exit "$taker" 100
+    status=$?
+    [ "$status" -eq 0 ] || fail "($row) refused start did not exit zero (status $status): $(cat "$dir/taker.out" "$dir/taker.err")"
+    grep -F "watcher: already running pid $holder" "$dir/taker.out" >/dev/null || fail "($row) refused start did not report already running: $(cat "$dir/taker.out" "$dir/taker.err")"
+    is_live_non_zombie "$holder" || fail "($row) the holder was signalled"
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$holder" ] || fail "($row) the holder lost its lock"
+    ! grep -qF 'watcher takeover' "$dir/taker.err" "$state/.watch-triage.log" 2>/dev/null || fail "($row) a takeover was logged"
+    if [ "$row" = no-opt-in ]; then
+      backdate_attach "$dir"
+      PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_ARM_ATTACH_POLL=0.1 "$WATCH_ARM" > "$dir/arm.out" 2>&1 &
+      armpid=$!
+      wait_for_line "$dir/arm.out" "watcher: attached pid=$holder" || fail "arm did not attach to the stale-attach detached holder: $(cat "$dir/arm.out")"
+      is_live_non_zombie "$holder" || fail "fm-watch-arm.sh took over a detached holder"
+      kill "$armpid" 2>/dev/null || true
+      wait "$armpid" 2>/dev/null || true
+    fi
+    kill "$holder" 2>/dev/null || true
+    wait "$holder" 2>/dev/null || true
+  done
+  pass "takeover refuses a freshly attached, non-opted-in, detached-taker, other-home, mismatched-identity, or non-detached holder"
+}
+
+test_arm_prunes_orphan_cycle_output() {
+  local dir state dead_pid live rc
+  dir=$(make_case arm-prune-orphans)
+  state="$dir/state"
+  dead_pid=999999
+  while kill -0 "$dead_pid" 2>/dev/null; do dead_pid=$((dead_pid + 1)); done
+  sleep 300 &
+  live=$!
+  printf 'orphan\n' > "$state/.watch-cycle-$dead_pid.out"
+  printf 'live\n' > "$state/.watch-cycle-$live.out"
+  touch -t 200001010000 "$state/.watch-cycle-$dead_pid.out" "$state/.watch-cycle-$live.out"
+  append_wake "$state" heartbeat heartbeat heartbeat || fail "could not queue a wake"
+  rc=0
+  PATH="$dir/fakebin:$PATH" FM_STATE_OVERRIDE="$state" "$WATCH_ARM" > "$dir/arm.out" 2>&1 || rc=$?
+  [ "$rc" -eq 0 ] || fail "arm over a pending queue exited $rc: $(cat "$dir/arm.out")"
+  [ ! -e "$state/.watch-cycle-$dead_pid.out" ] || fail "arm kept an old cycle output whose watcher is dead and left no status"
+  [ -e "$state/.watch-cycle-$live.out" ] || fail "arm pruned a cycle output whose pid is still alive"
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
+  pass "arm prunes old cycle output left by a dead watcher with no status, and keeps a live one"
 }
 
 test_pid_identity_is_locale_invariant() {
@@ -899,3 +1041,6 @@ test_unattached_wake_is_queued_and_drained
 test_arm_propagates_immediate_wake_before_confirmation
 test_arm_waits_for_peer_beacon_after_child_stands_down
 test_arm_fails_loud_when_no_fresh_watcher_confirmable
+test_takeover_evicts_unattached_detached_holder
+test_takeover_refuses_unsafe_holders
+test_arm_prunes_orphan_cycle_output

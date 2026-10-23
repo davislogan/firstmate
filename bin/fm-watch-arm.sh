@@ -52,6 +52,10 @@
 # Backward compatible: a healthy watcher started by an older coupled arm carries
 # no `detached` lock marker; this arm attaches to it like any other holder.
 #
+# Handover: a detached watcher with no fresh attach may be taken over by an
+# explicit non-detached start (AGENTS.md section 8; bin/fm-watch.sh "Takeover").
+# This arm never sets FM_WATCH_TAKEOVER and never takes over a holder.
+#
 # --restart: stop ONLY this FM_HOME's watcher (the pid recorded in THIS home's
 # state/.watch.lock) and own a fresh cycle, or report restart-only healthy if a
 # live peer still holds the lock after the duplicate child stands down. It
@@ -137,15 +141,26 @@ replay_cycle_and_exit() {
 touch_attach() { touch "$ATTACH_BEAT" 2>/dev/null || true; }
 
 # Drop cycle files of watchers that exited over a minute ago, so the state dir
-# does not accumulate them; a minute leaves attachers ample time to replay.
+# does not accumulate them; a minute leaves attachers ample time to replay. An
+# output file with no status (its watcher was SIGKILLed before its EXIT trap)
+# goes once its pid is dead and the file is equally old.
 prune_cycle_files() {
-  local rc pid
-  for rc in "$STATE"/.watch-cycle-*.rc; do
-    [ -e "$rc" ] || continue
-    [ "$(fm_path_age "$rc")" -ge 60 ] || continue
-    pid=${rc##*/.watch-cycle-}
+  local f pid
+  for f in "$STATE"/.watch-cycle-*.rc; do
+    [ -e "$f" ] || continue
+    [ "$(fm_path_age "$f")" -ge 60 ] || continue
+    pid=${f##*/.watch-cycle-}
     pid=${pid%.rc}
-    rm -f "$rc" "$(cycle_out "$pid")" 2>/dev/null || true
+    rm -f "$f" "$(cycle_out "$pid")" 2>/dev/null || true
+  done
+  for f in "$STATE"/.watch-cycle-*.out; do
+    [ -e "$f" ] || continue
+    pid=${f##*/.watch-cycle-}
+    pid=${pid%.out}
+    [ -e "$(cycle_rc "$pid")" ] && continue
+    fm_pid_alive "$pid" && continue
+    [ "$(fm_path_age "$f")" -ge 60 ] || continue
+    rm -f "$f" 2>/dev/null || true
   done
 }
 
@@ -284,7 +299,7 @@ while :; do
 done
 
 echo "watcher: FAILED - no live watcher with a fresh beacon"
-if fm_pid_alive "$child" && fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$child" "$FM_HOME"; then
+if fm_pid_alive "$child" && LC_ALL=C ps -p "$child" -o command= 2>/dev/null | grep -Fq "$WATCH"; then
   kill -TERM "$child" 2>/dev/null || true
 fi
 exit 1

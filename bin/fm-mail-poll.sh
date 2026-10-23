@@ -16,8 +16,9 @@
 #       error, a restart mid-drain, a missed wake) -> the same "mail-request
 #       <oldest> (+N)" line, repeated only when the pending set changes or
 #       FM_MAIL_PENDING_REWAKE seconds (default 1800) have passed
-#   missing tool/config (tenant, jq, mail-axi, inbox)  -> one rate-limited
-#       diagnostic line "mail-intake-error <msg>" at once
+#   missing tool/config (tenant, jq, mail tool, inbox)  -> one rate-limited
+#       diagnostic line "mail-intake-error <msg>" at once; a bad or ambiguous
+#       FM_MAIL_AXI resolution is a config error and surfaces at once too
 #   nonzero exit, timeout, unparseable output, or reported errors with nothing
 #       accepted (transient-prone)           -> counted, not surfaced, until
 #       FM_MAIL_ERROR_THRESHOLD consecutive polls (default 2) have failed; then
@@ -40,7 +41,9 @@
 #
 # Config (home .env, FM_MAIL_ENV_FILE, or env): FM_MAIL_INTAKE, FM_MAIL_CAPTAIN
 # (comma-separated allowlist passed to --allow-from), FM_MAIL_TENANT (required
-# once mail mode is on). FM_MAIL_POLL_TIMEOUT (default 20s, kept below
+# once mail mode is on), FM_MAIL_AXI (absolute path to the mail tool; resolved
+# fail-closed by fmm_resolve_axi in bin/fm-mail-lib.sh, never a bare PATH
+# lookup when set). FM_MAIL_POLL_TIMEOUT (default 20s, kept below
 # FM_CHECK_TIMEOUT) bounds the mail-axi call. FM_MAIL_PENDING_REWAKE (default
 # 1800s) rate-limits the reminder wake for stashes left in the inbox.
 # FM_MAIL_ERROR_THRESHOLD (default 2) is the consecutive-failure count that
@@ -191,7 +194,7 @@ case "$NOW" in ''|*[!0-9]*) NOW=$(date +%s) ;; esac
 
 [ -n "$FMM_TENANT" ] || fail_poll "missing FM_MAIL_TENANT"
 command -v jq >/dev/null 2>&1 || fail_poll "missing jq"
-command -v mail-axi >/dev/null 2>&1 || fail_poll "missing mail-axi"
+fmm_resolve_axi || fail_poll "$FMM_AXI_ERROR"
 mkdir -p "$INBOX" 2>/dev/null || fail_poll "cannot create inbox"
 
 limit=${FM_MAIL_POLL_TIMEOUT:-20}
@@ -213,7 +216,7 @@ trap 'rm -f "$OUT" "$ERR"' EXIT
 
 [ "$stagger" -le 0 ] || sleep "$stagger"
 started=$(date +%s)
-set -- mail-axi intake --mailbox "$FMM_INTAKE" --stash-dir "$INBOX" \
+set -- "$FMM_AXI" intake --mailbox "$FMM_INTAKE" --stash-dir "$INBOX" \
   --allow-from "${FMM_CAPTAIN// /}" --tenant "$FMM_TENANT" --json
 if command -v timeout >/dev/null 2>&1; then
   timeout "$limit" "$@" > "$OUT" 2> "$ERR"

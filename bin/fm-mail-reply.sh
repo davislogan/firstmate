@@ -21,6 +21,7 @@
 #   --attach paths must resolve inside data/mail-requests/<req>/out/, so a reply
 #   can never carry an arbitrary local file; copy deliverables there first.
 #   --done then runs `mail-axi move <graphId> --folder done --mailbox ...`.
+#   `mail-axi` means the tool FM_MAIL_AXI resolves to, fail closed (fmm_resolve_axi).
 #
 # The body is always passed by file: never inline mail-influenced text into a
 # shell command.
@@ -40,7 +41,7 @@ usage() {
 
 REQ=${1:-}
 [ -n "$REQ" ] || { usage; exit 2; }
-case "$REQ" in -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+case "$REQ" in -h|--help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
 shift
 fmm_safe_slug "$REQ" || { echo "fm-mail-reply: unsafe request id: $REQ" >&2; exit 2; }
 
@@ -71,7 +72,7 @@ if [ "$WANT" = send ] && ! fmm_send_enabled; then
 fi
 if [ "$WANT" != draft ] && fmm_send_enabled; then MODE=send; fi
 command -v jq >/dev/null 2>&1 || { echo "fm-mail-reply: jq not found" >&2; exit 1; }
-command -v mail-axi >/dev/null 2>&1 || { echo "fm-mail-reply: mail-axi not found" >&2; exit 1; }
+fmm_resolve_axi || { echo "fm-mail-reply: $FMM_AXI_ERROR" >&2; exit 1; }
 
 DIR=$(fmm_request_dir "$REQ")
 [ -f "$DIR/request.json" ] || { echo "fm-mail-reply: no ingested request $REQ" >&2; exit 2; }
@@ -103,7 +104,7 @@ if [ -n "$BODY" ]; then
     esac
   done
   errf=$(mktemp "${TMPDIR:-/tmp}/fm-mail-reply.XXXXXX") || { echo "fm-mail-reply: mktemp failed" >&2; exit 1; }
-  if ! draft=$(mail-axi "${args[@]}" 2>"$errf"); then
+  if ! draft=$("$FMM_AXI" "${args[@]}" 2>"$errf"); then
     err=$(tr -d '\r' < "$errf" | grep -v '^[[:space:]]*$' | tail -n3 | tr -cd '[:print:]\n' | cut -c1-300)
     rm -f "$errf"
     echo "fm-mail-reply: mail-axi ${args[0]} failed for $REQ${err:+: }" >&2
@@ -120,7 +121,7 @@ if [ -n "$BODY" ]; then
 fi
 
 if [ "$DONE" -eq 1 ]; then
-  if ! mail-axi move "$GRAPH_ID" --folder "done" --mailbox "$FMM_INTAKE" >/dev/null 2>&1; then
+  if ! "$FMM_AXI" move "$GRAPH_ID" --folder "done" --mailbox "$FMM_INTAKE" >/dev/null 2>&1; then
     echo "fm-mail-reply: could not move $REQ to done; retry with: fm-mail-reply.sh $REQ --done" >&2
     [ -n "$BODY" ] && exit 6
     exit 1

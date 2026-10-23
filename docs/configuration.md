@@ -240,8 +240,20 @@ It is off unless the firstmate home's gitignored `.env` contains non-empty `FM_M
 Opting in is standing authorization for reversible work up to "PR ready" (tier T1); merges, money, deletes, and config or credential changes (tier T2) are parked for the captain's word at the terminal.
 For direct client invocations, environment values override `.env`, and `FM_MAIL_ENV_FILE` can point them at another `.env`-style file; bootstrap activation still keys off `$FM_HOME/.env`.
 
+### Mail tool (`FM_MAIL_AXI`)
+
+Every mail-mode script reaches the mail tool through one resolver, `fmm_resolve_axi` in `bin/fm-mail-lib.sh`, and never calls a bare `mail-axi`.
+`FM_MAIL_AXI` names the tool executable explicitly, as an absolute path in `.env` (an environment value wins, as for the other keys).
+When it is set, that path is used regardless of `PATH` order.
+If the path is relative, missing, or not executable, the script fails closed with one line naming the setting and the path, such as `FM_MAIL_AXI=/path/to/mail-axi is missing or not executable`, and never falls back to `PATH`.
+The poll reports that as `mail-intake-error <msg>` on the first poll, because it is a config error and not subject to the transient-failure threshold.
+When `FM_MAIL_AXI` is unset, the resolver uses `mail-axi` from `PATH` only when exactly one distinct executable answers to that name (the same file reached through several `PATH` entries or symlinks counts once).
+None, or two different ones, fail closed with a message that lists them and asks for `FM_MAIL_AXI`.
+This keeps single-tool installs working unchanged while refusing the dangerous case: when two different tools answer to `mail-axi`, which one wins depends on the `PATH` of whatever process runs the script, and login shells, multiplexer panes, and harness shell snapshots all order `PATH` differently, so a home could silently reach the wrong mailbox tool.
+The resolver exports `FM_HOME` to the tool on every call, including hand-run helpers whose home came from the script location, so a per-home shim that routes on `FM_HOME` always sees the calling home.
+
 The locked session-start bootstrap step turns that config into local generated state, exactly as for X mode.
-It needs `jq`, `python3`, and `mail-axi` on `PATH`, and prints `MAIL: mail mode off - missing ...` instead of arming when one is absent.
+It needs `jq` and `python3` on `PATH` plus a mail tool that resolves as described above, and prints `MAIL: mail mode off - ...` naming the missing tool or the resolver error instead of arming when one is absent.
 It writes `state/mail-watch.check.sh`, a check shim that runs `bin/fm-mail-poll.sh`, and `config/mail-mode.env`, which lowers `FM_CHECK_INTERVAL` to 60 unless an already-lower value is set.
 Because X mode's `config/x-mode.env` sets 30 unconditionally and the mail file only ever lowers the value, the lower interval wins in either sourcing order.
 Every harness protocol that sources `config/x-mode.env` also sources `config/mail-mode.env`, and either file keeps the watcher armed with no fleet work.
@@ -385,6 +397,7 @@ FM_MAIL_INTAKE=          # mail mode intake mailbox; with FM_MAIL_CAPTAIN in .en
 FM_MAIL_CAPTAIN=         # mail mode allowed sender address, or a comma-separated allowlist
 FM_MAIL_SEND=            # optional; 1 = really send mail-mode replies instead of leaving drafts
 FM_MAIL_TENANT=          # tenant id mail-axi verifies on every intake message
+FM_MAIL_AXI=             # absolute path to the mail tool; unset = the single mail-axi on PATH (ambiguous PATH fails closed)
 FM_MAIL_ENV_FILE=        # optional alternate .env file for direct mail-mode client invocations; bootstrap still checks $FM_HOME/.env
 FM_MAIL_POLL_TIMEOUT=20  # seconds allowed for one mail-axi intake call; with the stagger, kept below FM_CHECK_TIMEOUT
 FM_MAIL_ERROR_THRESHOLD=2  # consecutive failed polls before a transient-prone mail-axi failure surfaces as mail-intake-error

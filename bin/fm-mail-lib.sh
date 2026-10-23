@@ -8,8 +8,11 @@
 #
 # This file is sourced, never executed. It reuses fm-x-lib.sh's generic .env and
 # meta readers and defines:
-#   fmm_load_config            - resolve FMM_INTAKE, FMM_CAPTAIN, FMM_TENANT
-#                                (an explicit environment value wins over .env)
+#   fmm_load_config            - resolve FMM_INTAKE, FMM_CAPTAIN, FMM_TENANT,
+#                                FMM_SEND, FMM_AXI_SETTING (an explicit
+#                                environment value wins over .env)
+#   fmm_resolve_axi            - resolve the mail tool into FMM_AXI and export
+#                                FM_HOME; on failure set FMM_AXI_ERROR and return 1
 #   fmm_enabled                - true when FMM_INTAKE and FMM_CAPTAIN are set
 #   fmm_send_enabled           - true when FM_MAIL_SEND=1 (real sends opted in)
 #   fmm_safe_slug <value>      - true when value is a safe filename slug
@@ -17,6 +20,18 @@
 #   fmm_meta_link_set <meta> <req> <epoch> - (re)write the mail_req link
 #   fmm_meta_link_clear <meta> - remove the mail_req link
 # Callers must have FM_HOME set before calling fmm_load_config.
+#
+# Mail tool resolution (the one owner; every mail-axi call goes through FMM_AXI):
+#   FM_MAIL_AXI set     -> must be an absolute path to an executable file; if it
+#                          is not, fail closed and never fall back to PATH.
+#   FM_MAIL_AXI unset   -> exactly one distinct `mail-axi` on PATH is used; none,
+#                          or several different ones, fail closed. Single-tool
+#                          installs keep working unchanged, while a machine where
+#                          two tools answer to `mail-axi` must name one, because
+#                          PATH order differs between login shells, tmux panes,
+#                          and harness shell snapshots.
+# FM_HOME is exported so a tool that routes on it (a per-home shim) sees the
+# same home as the calling script, including for hand-run helpers.
 
 FMM_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-x-lib.sh disable=SC1091
@@ -29,6 +44,46 @@ fmm_load_config() {
   # shellcheck disable=SC2034 # FMM_TENANT is read by callers (fm-mail-poll.sh) after sourcing.
   if [ -n "${FM_MAIL_TENANT+x}" ]; then FMM_TENANT=${FM_MAIL_TENANT-}; else FMM_TENANT=$(fmx_env_get FM_MAIL_TENANT "$env_file"); fi
   if [ -n "${FM_MAIL_SEND+x}" ]; then FMM_SEND=${FM_MAIL_SEND-}; else FMM_SEND=$(fmx_env_get FM_MAIL_SEND "$env_file"); fi
+  if [ -n "${FM_MAIL_AXI+x}" ]; then FMM_AXI_SETTING=${FM_MAIL_AXI-}; else FMM_AXI_SETTING=$(fmx_env_get FM_MAIL_AXI "$env_file"); fi
+}
+
+# shellcheck disable=SC2034 # FMM_AXI and FMM_AXI_ERROR are read by callers.
+fmm_resolve_axi() {
+  local p real found='' found_all='' distinct=0 seen=''
+  FMM_AXI=
+  FMM_AXI_ERROR=
+  export FM_HOME
+  if [ -n "${FMM_AXI_SETTING:-}" ]; then
+    case "$FMM_AXI_SETTING" in
+      /*) ;;
+      *) FMM_AXI_ERROR="FM_MAIL_AXI must be an absolute path: $FMM_AXI_SETTING"; return 1 ;;
+    esac
+    if [ ! -f "$FMM_AXI_SETTING" ] || [ ! -x "$FMM_AXI_SETTING" ]; then
+      FMM_AXI_ERROR="FM_MAIL_AXI=$FMM_AXI_SETTING is missing or not executable"
+      return 1
+    fi
+    FMM_AXI=$FMM_AXI_SETTING
+    return 0
+  fi
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    real=$(readlink -f "$p" 2>/dev/null) || real=$p
+    [ -n "$real" ] || real=$p
+    case "$seen" in *"|$real|"*) continue ;; esac
+    seen="$seen|$real|"
+    distinct=$((distinct + 1))
+    [ -n "$found" ] || found=$p
+    found_all="${found_all:+$found_all, }$p"
+  done < <(type -ap mail-axi 2>/dev/null)
+  if [ "$distinct" -eq 0 ]; then
+    FMM_AXI_ERROR="mail-axi not found on PATH and FM_MAIL_AXI unset"
+    return 1
+  fi
+  if [ "$distinct" -gt 1 ]; then
+    FMM_AXI_ERROR="FM_MAIL_AXI unset and PATH has $distinct different mail-axi; set FM_MAIL_AXI (found: $found_all)"
+    return 1
+  fi
+  FMM_AXI=$found
 }
 
 fmm_send_enabled() {

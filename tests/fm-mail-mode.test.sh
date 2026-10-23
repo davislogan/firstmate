@@ -13,6 +13,16 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-mail-mode-tests)
+
+# Drop every PATH dir that holds a real mail-axi so only the fakebin stub (or a
+# deliberately planted decoy) is ever resolvable; FM_MAIL_AXI must not leak in.
+hermetic_path=
+IFS=: read -r -a path_dirs <<< "$PATH"
+for d in "${path_dirs[@]}"; do
+  [ -n "$d" ] && [ ! -e "$d/mail-axi" ] && hermetic_path="${hermetic_path:+$hermetic_path:}$d"
+done
+export PATH=$hermetic_path
+unset FM_MAIL_AXI
 TENANT=b9726fce-0000-0000-0000-000000000000
 CAPTAIN=captain@example.com
 
@@ -24,6 +34,7 @@ make_fake_mail_axi() {
   cat > "$fakebin/mail-axi" <<'SH'
 #!/usr/bin/env bash
 [ -n "${FAKE_MAIL_LOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_MAIL_LOG"
+[ -n "${FAKE_MAIL_HOME_LOG:-}" ] && printf 'FM_HOME=%s\n' "${FM_HOME-<unset>}" >> "$FAKE_MAIL_HOME_LOG"
 cmd=$1; shift
 opt() { local want=$1; shift; while [ $# -gt 0 ]; do [ "$1" = "$want" ] && { printf '%s' "$2"; return; }; shift; done; }
 case "$cmd" in
@@ -330,7 +341,7 @@ test_bootstrap_missing_mail_axi() {
   local home out
   home=$(make_home boot-missing)
   out=$(PATH="/usr/bin:/bin" FM_HOME="$home" "$BASH" "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
-  assert_contains "$out" "MAIL: mail mode off - missing" "a missing mail-axi must be reported"
+  assert_contains "$out" "MAIL: mail mode off - mail-axi not found on PATH and FM_MAIL_AXI unset" "a missing mail-axi must be reported"
   assert_contains "$out" "mail-axi" "the report must name mail-axi"
   assert_absent "$home/state/mail-watch.check.sh" "a missing dependency must not arm the shim"
   pass "bootstrap refuses to arm mail mode without mail-axi"
@@ -577,6 +588,97 @@ test_link_and_followup() {
   pass "fm-mail-link and fm-mail-followup record, draft, and clear the link"
 }
 
+# --- mail tool resolution (FM_MAIL_AXI) -------------------------------------
+
+# make_decoy <dir>: a different mail-axi that must never be reached; it records
+# any call and fails like the wrong mailbox tool would.
+make_decoy() {
+  mkdir -p "$1"
+  cat > "$1/mail-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$(dirname "$0")/decoy.log"
+echo 'mailbox "x" is not on the phase 1 allowlist' >&2
+exit 3
+SH
+  chmod +x "$1/mail-axi"
+}
+
+test_configured_tool_wins_over_path() {
+  local home fakebin decoy tooldir req=20261010-1412-a3f9c1 out
+  home=$(make_home axi-configured); fakebin=$(make_fake_mail_axi "$home")
+  # The configured tool lives off PATH; a decoy mail-axi is first on PATH.
+  tooldir="$home/tool"; mkdir -p "$tooldir"; mv "$fakebin/mail-axi" "$tooldir/mail-axi"
+  decoy="$home/decoy"; make_decoy "$decoy"
+  printf 'FM_MAIL_AXI=%s\n' "$tooldir/mail-axi" >> "$home/.env"
+  out=$(PATH="$decoy:$fakebin:$PATH" FM_HOME="$home" FAKE_MAIL_LOG="$home/mail.log" FAKE_MAIL_HOME_LOG="$home/home.log" \
+    FM_MAIL_STAGGER_MAX=0 "$ROOT/bin/fm-mail-poll.sh")
+  [ -z "$out" ] || fail "the configured tool must answer the poll (got: $out)"
+  assert_grep "intake --mailbox firstmate@example.com" "$home/mail.log" "the poll must call the configured tool"
+  assert_grep "FM_HOME=$home" "$home/home.log" "the poll must pass FM_HOME to the tool"
+  # Hand-run helper with FM_HOME unset (home from FM_ROOT_OVERRIDE): FM_HOME is
+  # still exported to the tool, so a per-home shim routes correctly.
+  seed_request "$home" "$req"
+  printf 'Done, captain.\n' > "$home/body.txt"
+  : > "$home/home.log"
+  out=$(env -u FM_HOME PATH="$decoy:$fakebin:$PATH" FM_ROOT_OVERRIDE="$home" FAKE_MAIL_LOG="$home/mail.log" FAKE_MAIL_HOME_LOG="$home/home.log" \
+    "$ROOT/bin/fm-mail-reply.sh" "$req" --body-file "$home/body.txt" --done); expect_code 0 $? "reply via the configured tool"
+  assert_contains "$out" "draft draft-123" "reply must go through the configured tool"
+  assert_grep "FM_HOME=$home" "$home/home.log" "a hand-run reply must export FM_HOME to the tool"
+  assert_no_grep "FM_HOME=<unset>" "$home/home.log" "no tool call may run without FM_HOME"
+  # Ingest with attachments uses the configured tool too.
+  mkdir -p "$home/state/mail-inbox" "$home/att"; printf 'x' > "$home/att/a.txt"
+  write_stash "$home/state/mail-inbox/20261010-1500-bbbbbb.json" 20261010-1500-bbbbbb '.attachments = [{"id":"a1","name":"a.txt","type":"text/plain","bytes":1}]'
+  out=$(PATH="$decoy:$fakebin:$PATH" FM_HOME="$home" FAKE_MAIL_LOG="$home/mail.log" FAKE_ATTACH_SRC="$home/att" \
+    "$ROOT/bin/fm-mail-ingest.sh" 20261010-1500-bbbbbb); expect_code 0 $? "ingest via the configured tool"
+  assert_grep "save-attachments " "$home/mail.log" "ingest must save attachments through the configured tool"
+  assert_absent "$decoy/decoy.log" "the mail-axi first on PATH must never be called"
+  pass "FM_MAIL_AXI routes poll, ingest, and reply to the configured tool regardless of PATH, with FM_HOME exported"
+}
+
+test_configured_tool_fails_closed() {
+  local home fakebin decoy req=20261010-1412-a3f9c1 out bad
+  home=$(make_home axi-bad); fakebin=$(make_fake_mail_axi "$home")
+  decoy="$home/decoy"; make_decoy "$decoy"
+  cp "$home/.env" "$home/.env.base"
+  for bad in "$home/nope/mail-axi" "$home/noexec" "relative/mail-axi"; do
+    : > "$home/noexec"; chmod -x "$home/noexec"
+    rm -f "$home/state/mail-poll.error" "$home/state/mail-poll.failcount"
+    { cat "$home/.env.base"; printf 'FM_MAIL_AXI=%s\n' "$bad"; } > "$home/.env"
+    out=$(run_poll "$home" "$decoy:$fakebin")
+    assert_contains "$out" "mail-intake-error FM_MAIL_AXI" "a bad FM_MAIL_AXI ($bad) must surface on the first poll"
+    assert_contains "$out" "$bad" "the error must name the configured path"
+  done
+  { cat "$home/.env.base"; printf 'FM_MAIL_AXI=%s\n' "$home/nope/mail-axi"; } > "$home/.env"
+  out=$(run_poll "$home" "$decoy:$fakebin")
+  assert_contains "$out" "mail-intake-error FM_MAIL_AXI=$home/nope/mail-axi is missing or not executable" "the missing-path message must be one clear line"
+  seed_request "$home" "$req"; printf 'hi\n' > "$home/body.txt"
+  out=$(PATH="$decoy:$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-mail-reply.sh" "$req" --body-file "$home/body.txt" 2>&1); expect_code 1 $? "reply must fail closed"
+  assert_contains "$out" "fm-mail-reply: FM_MAIL_AXI=$home/nope/mail-axi is missing or not executable" "reply must name the setting and path"
+  out=$(PATH="$decoy:$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "MAIL: mail mode off - FM_MAIL_AXI=$home/nope/mail-axi is missing or not executable" "bootstrap must refuse to arm"
+  assert_absent "$home/state/mail-watch.check.sh" "a bad FM_MAIL_AXI must not arm the shim"
+  assert_absent "$home/mail.log" "a misconfigured home must never fall back to a PATH mail-axi"
+  assert_absent "$decoy/decoy.log" "a misconfigured home must never reach a different mail-axi"
+  pass "a missing, non-executable, or relative FM_MAIL_AXI fails closed with a clear message and no PATH fallback"
+}
+
+test_unset_tool_needs_one_unambiguous_path_tool() {
+  local home fakebin decoy out
+  home=$(make_home axi-unset); fakebin=$(make_fake_mail_axi "$home")
+  # One distinct tool, listed twice through a symlinked dir: still unambiguous.
+  ln -s "$fakebin" "$home/fakebin-link"
+  out=$(run_poll "$home" "$fakebin:$home/fakebin-link")
+  [ -z "$out" ] || fail "a single tool reachable twice must be used (got: $out)"
+  assert_grep "intake " "$home/mail.log" "the single PATH tool must be called"
+  rm -f "$home/mail.log"
+  decoy="$home/decoy"; make_decoy "$decoy"
+  out=$(run_poll "$home" "$fakebin:$decoy")
+  assert_contains "$out" "mail-intake-error FM_MAIL_AXI unset and PATH has 2 different mail-axi; set FM_MAIL_AXI (found: " "two different PATH tools must be refused at once"
+  assert_absent "$home/mail.log" "an ambiguous PATH must call neither tool"
+  assert_absent "$decoy/decoy.log" "an ambiguous PATH must call neither tool"
+  pass "with FM_MAIL_AXI unset, exactly one distinct PATH mail-axi is used and an ambiguous PATH fails closed"
+}
+
 # --- prune -----------------------------------------------------------------
 
 test_prune_retention() {
@@ -620,4 +722,7 @@ test_ingest_rechecks_saved_sizes
 test_reply_drafts_and_moves
 test_reply_send_mode
 test_link_and_followup
+test_configured_tool_wins_over_path
+test_configured_tool_fails_closed
+test_unset_tool_needs_one_unambiguous_path_tool
 test_prune_retention

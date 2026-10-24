@@ -97,7 +97,7 @@ Natural language is acceptable if uncertain.
 
 | Fact | Value |
 |---|---|
-| Busy-pane signature | `esc to interrupt`; also a `Waiting for N background agents to finish` spinner row directly above the composer while the crew's turn has ended but its own subagents run (matched by `fm_text_awaiting_subagents` in `bin/fm-tmux-lib.sh`) |
+| Busy-pane signature | `esc to interrupt`; newer Claude Code builds can omit that hint and show only the spinner line `<Verb>… (6m 1s · 12.4k tokens)` (variants `(12s · ↓ 549 tokens)`, `· thinking` suffix; measured 2026-10-24), matched by the `…` + `(` + elapsed time + `·` alternative in `FM_TMUX_BUSY_REGEX_DEFAULT`, which does not match a finished-turn summary like `✻ Brewed for 1m 54s · done 8:31 PM`; also a `Waiting for N background agents to finish` spinner row directly above the composer while the crew's turn has ended but its own subagents run (matched by `fm_text_awaiting_subagents` in `bin/fm-tmux-lib.sh`) |
 | Exit command | `/exit` |
 | Interrupt | single Escape |
 | Skill invocation | `/<skill>` (e.g. `/no-mistakes`) |

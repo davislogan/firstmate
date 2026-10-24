@@ -40,13 +40,20 @@
 # Busy footers per harness. This is the ONE owner of the default set:
 # bin/fm-watch.sh, the daemon, and fm-crew-state.sh source this file and reach
 # it through fm_text_shows_busy (the daemon's inject guard also reads it
-# directly). claude/codex: "esc to interrupt"; opencode: "esc interrupt";
+# directly). claude/codex: "esc to interrupt"; claude's spinner line
+# "<Verb>… (6m 1s · 12.4k tokens)" (below); opencode: "esc interrupt";
 # pi: "Working..."; grok: "Ctrl+c:cancel"
 # (grok's mid-turn cancel hint, shown iff a turn is running - verified grok 0.2.73).
 # fm_tmux_composer_state also consults this set (a footer on the cursor line is
 # not pending input), so it must stay a vocabulary of footer phrases only; the
 # subagent-wait signature below is deliberately a SEPARATE predicate for that reason.
-FM_TMUX_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel'
+# Claude Code builds that omit the "esc to interrupt" hint (observed 2026-10-24)
+# show only the spinner line "<Verb>… (6m 1s · ↓ 549 tokens)", optionally with a
+# "· thinking" suffix. The alternative anchors on the ellipsis, the opening paren,
+# an elapsed time (Ns, Nm Ns, Nh Nm Ns), and the "·" separator. A finished-turn
+# summary ("✻ Brewed for 1m 54s · done 8:31 PM") has no ellipsis or paren, so it
+# does not match.
+FM_TMUX_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel|…[[:space:]]*\(([0-9]+[hm][[:space:]]+)*[0-9]+s[[:space:]]*·'
 
 # Claude subagent-wait signature (verified Claude Code, 2026-09-30). A claude crew
 # that dispatches its own background subagents ENDS its turn while they run, so

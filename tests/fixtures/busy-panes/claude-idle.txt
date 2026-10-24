@@ -1,0 +1,6 @@
+● Done. The change is committed on the branch.
+
+────────────────────────────────────────
+❯ 
+────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

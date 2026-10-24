@@ -1,0 +1,2 @@
+⠹ Thinking… 1.1s … [stop]
+Shift+Tab:mode │ Ctrl+c:cancel │ Ctrl+.:shortcuts

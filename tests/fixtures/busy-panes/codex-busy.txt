@@ -1,0 +1,4 @@
+• Working (42s • esc to interrupt)
+
+› Ask Codex to do anything
+  gpt-5.5 high · ~/proj

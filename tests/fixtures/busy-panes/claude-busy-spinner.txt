@@ -1,0 +1,8 @@
+● Reading the watcher classifier now.
+
+✻ Quantumizing… (6m 1s · 12.4k tokens)
+
+────────────────────────────────────────
+❯ 
+────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

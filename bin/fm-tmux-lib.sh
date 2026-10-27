@@ -147,6 +147,12 @@ fm_tmux_composer_state() {  # <target> -> empty|pending|unknown
   case "$cy" in ''|*[!0-9]*) printf 'unknown'; return 0 ;; esac
   raw=$(tmux capture-pane -e -p -t "$target" -S "$cy" -E "$cy" 2>/dev/null) || { printf 'unknown'; return 0; }
   line=$(printf '%s\n' "$raw" | fm_tmux_strip_ghost)
+  # Normalize NO-BREAK SPACE (U+00A0) to a plain space before trimming.
+  # Claude Code (verified v2.1.312, 2026-10-27) draws its empty composer as
+  # "❯" + NBSP, and NBSP is not in [[:space:]], so without this an idle or
+  # just-submitted composer read as "pending" and every fm-send falsely
+  # reported a swallowed Enter (incident fm-send-enter-swallow).
+  line=${line//$'\xc2\xa0'/ }
   # Strip the composer box borders (literal glyphs - no character classes).
   stripped=${line//│/}      # U+2502 light vertical (claude)
   stripped=${stripped//┃/}  # U+2503 heavy vertical

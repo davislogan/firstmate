@@ -539,6 +539,7 @@ fm_backend_cmux_composer_state() {  # <target> [expected-label] -> empty|pending
   local target=$1 expected_label=${2:-} cap line trimmed stripped="" found=0
   cap=$(fm_backend_cmux_capture "$target" "$FM_BACKEND_CMUX_COMPOSER_LINES" "$expected_label") || { printf 'unknown'; return 0; }
   while IFS= read -r line; do
+    line=${line//$'\xc2\xa0'/ }  # NBSP -> space; see fm_tmux_composer_state
     trimmed="${line#"${line%%[![:space:]]*}"}"
     trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
     [ -n "$trimmed" ] || continue

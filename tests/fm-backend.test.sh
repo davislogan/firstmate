@@ -630,10 +630,14 @@ run_send_case() {  # <bin-root> <fakebin> <log> <home> -- <send args...>
     "$bin/bin/fm-send.sh" "$@" >/dev/null 2>&1
 }
 
+# Drops read-only queries that newer fm-send adds around the conformed command
+# sequence: the target preflight, and the agent-liveness probe that lets fm-send
+# tell a swallowed Enter from an agent that exited (tests/fm-send-verdict.test.sh).
 strip_send_preflight() {  # <log>
-  local preflight
+  local preflight liveness
   preflight=$'tmux\x1fdisplay-message\x1f-p\x1f-t\x1fsess:win\x1f#{pane_id}'
-  awk -v preflight="$preflight" '$0 != preflight { print }' "$1"
+  liveness=$'tmux\x1fdisplay-message\x1f-p\x1f-t\x1fsess:win\x1f#{pane_current_command}'
+  awk -v preflight="$preflight" -v liveness="$liveness" '$0 != preflight && $0 != liveness { print }' "$1"
 }
 
 test_send_conformance_old_vs_new() {

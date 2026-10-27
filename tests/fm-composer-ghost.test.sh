@@ -8,7 +8,8 @@
 #   1. fm_tmux_strip_ghost drops dim/faint runs and keeps normal-intensity text.
 #   2. fm_pane_input_pending reads a dim-ghost-only composer as NOT pending, while
 #      still treating real (normal-intensity) text as pending.
-#   3. The human/LLM-facing capture path (fm-peek.sh) stays PLAIN - no escape codes
+#   3. A glyph + NO-BREAK SPACE composer (claude's empty composer) is not pending.
+#   4. The human/LLM-facing capture path (fm-peek.sh) stays PLAIN - no escape codes
 #      ever reach firstmate's context.
 set -u
 
@@ -139,6 +140,49 @@ test_dim_ghost_inside_bordered_composer_is_not_pending() {
   pass "fm_pane_input_pending: dim ghost inside a bordered composer is NOT pending"
 }
 
+# Claude Code (verified v2.1.312, 2026-10-27) draws its empty composer as the
+# prompt glyph followed by a NO-BREAK SPACE (U+00A0), which [[:space:]] does not
+# trim. These are the exact styled bytes captured from a live pane: an idle
+# composer, and a busy agent's composer right after a queued submit, which adds
+# a dim "Press up to edit queued messages" hint. Both mean the Enter landed.
+test_nbsp_empty_composer_is_not_pending() {
+  local dir fb capture
+  dir="$TMP_ROOT/nbsp-empty"; mkdir -p "$dir"
+  fb=$(make_fake_tmux "$dir")
+  capture="$dir/styled.txt"
+  printf '\033[38;5;246m\xe2\x9d\xaf\xc2\xa0\033[39m\n' > "$capture"
+  if PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY=0 \
+     fm_pane_input_pending "fakepane"; then
+    fail "idle claude composer (glyph + NBSP) falsely read as pending"
+  fi
+  pass "fm_pane_input_pending: an idle glyph+NBSP composer is NOT pending"
+}
+
+test_nbsp_queued_hint_composer_is_not_pending() {
+  local dir fb capture
+  dir="$TMP_ROOT/nbsp-queued"; mkdir -p "$dir"
+  fb=$(make_fake_tmux "$dir")
+  capture="$dir/styled.txt"
+  printf '\033[38;5;246m\xe2\x9d\xaf\xc2\xa0\033[2m\033[39mPress up to edit queued messages\033[0m\n' > "$capture"
+  if PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY=0 \
+     fm_pane_input_pending "fakepane"; then
+    fail "busy claude composer after a queued submit falsely read as pending"
+  fi
+  pass "fm_pane_input_pending: a busy agent's queued-message hint is NOT pending"
+}
+
+test_nbsp_composer_with_real_text_is_pending() {
+  local dir fb capture
+  dir="$TMP_ROOT/nbsp-text"; mkdir -p "$dir"
+  fb=$(make_fake_tmux "$dir")
+  capture="$dir/styled.txt"
+  printf '\033[38;5;246m\xe2\x9d\xaf\xc2\xa0\033[39mthis should stay unsent\n' > "$capture"
+  PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY=0 \
+    fm_pane_input_pending "fakepane" \
+    || fail "unsent text after a glyph+NBSP prompt was not detected as pending"
+  pass "fm_pane_input_pending: unsent text after a glyph+NBSP prompt is still pending"
+}
+
 test_normal_text_still_pending() {
   local dir fb capture
   dir="$TMP_ROOT/real-text"; mkdir -p "$dir"
@@ -236,6 +280,9 @@ test_strip_ghost_handles_combined_and_boundary_codes
 test_strip_ghost_keeps_colored_text_with_2_payloads
 test_dim_ghost_only_composer_is_not_pending
 test_dim_ghost_inside_bordered_composer_is_not_pending
+test_nbsp_empty_composer_is_not_pending
+test_nbsp_queued_hint_composer_is_not_pending
+test_nbsp_composer_with_real_text_is_pending
 test_normal_text_still_pending
 test_subagent_wait_phrase_in_composer_is_pending
 test_colored_text_with_2_payload_still_pending

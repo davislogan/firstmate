@@ -15,6 +15,14 @@
 # submit or reports an inconclusive send. If a swallowed Enter is positively
 # confirmed, fm-send exits NON-ZERO so the caller knows the steer did not land
 # instead of silently leaving an unsubmitted instruction.
+# A pending verdict is evidence of a swallowed Enter only while an agent owns
+# the pane: a bare shell's prompt row always reads as text. So fm-send probes
+# agent-process liveness (fm_backend_agent_alive) before and after the send and,
+# when the pane is confidently a bare shell, reports what actually happened -
+# the agent exited after taking the line (e.g. /exit; success with a note), the
+# line ran as a shell command that is still running (e.g. a relaunch; success
+# with a note), or no agent was there at all (error). Backends without a
+# verified liveness probe report unknown and keep the plain pending verdict.
 # Submission dispatches through the target's recorded backend; the tmux adapter
 # shares its composer/submit core with the away-mode daemon via bin/fm-tmux-lib.sh.
 # Tune with FM_SEND_RETRIES (default 3) / FM_SEND_SLEEP (0.4).
@@ -220,15 +228,47 @@ else
   esac
   retries=${FM_SEND_RETRIES:-3}
   sleep_s=${FM_SEND_SLEEP:-0.4}
+  # Agent-process liveness before the send (alive|dead|unknown; only tmux and
+  # herdr can report a confident dead). A "pending" verdict means the cursor
+  # row still holds text, which is only evidence of a swallowed Enter while an
+  # agent owns the pane. Once the pane is a bare shell its prompt row always
+  # reads as text, so a pending verdict there is reinterpreted below instead of
+  # being misreported as a swallowed Enter.
+  alive_before=$(fm_backend_agent_alive "$TARGET_BACKEND" "$T" 2>/dev/null || printf unknown)
   # Type once, submit, verify. Lenient: only a positively-confirmed swallow
   # (text still in the composer) is an error; an unreadable pane is assumed sent.
   if ! verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$MARK_PREFIX$*" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL"); then
     echo "error: text not sent to $T ($TARGET_BACKEND send failed; tried $RESOLUTION_TRIED)" >&2
     exit 1
   fi
+  if [ "$verdict" = pending ]; then
+    alive_after=$(fm_backend_agent_alive "$TARGET_BACKEND" "$T" 2>/dev/null || printf unknown)
+    case "$alive_before:$alive_after" in
+      dead:dead)
+        echo "error: no agent running in $T (pane is a bare shell); the text went to the shell, not to an agent (tried $RESOLUTION_TRIED)" >&2
+        exit 1
+        ;;
+      dead:*)
+        # The pane was a bare shell, so the shell took the line and Enter; the
+        # command it ran (typically an agent relaunch) now owns the pane.
+        echo "note: $T was a bare shell; the text was run as a shell command, which is still running" >&2
+        verdict=submitted-to-shell
+        ;;
+      alive:dead)
+        # The agent took the line and then exited (an exit command such as
+        # /exit, or a crash right after submit). The submit itself landed.
+        echo "note: agent in $T exited after the text was submitted; the pane is now a bare shell" >&2
+        verdict=submitted-then-exited
+        ;;
+      *:dead)
+        echo "error: $T is now a bare shell and its agent's state before the send is unknown; cannot tell whether the agent received the text (tried $RESOLUTION_TRIED)" >&2
+        exit 1
+        ;;
+    esac
+  fi
   case "$verdict" in
     pending)
-      echo "error: text not submitted to $T (Enter swallowed; text left in composer; tried $RESOLUTION_TRIED)" >&2
+      echo "error: text not submitted to $T (still in the agent's composer after $retries Enter attempts; tried $RESOLUTION_TRIED)" >&2
       exit 1
       ;;
     send-failed)

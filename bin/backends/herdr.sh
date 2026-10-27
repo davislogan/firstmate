@@ -712,6 +712,7 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown
   while IFS= read -r line; do
     raw_line=$line
     line=$(fm_backend_herdr_strip_ansi "$line")
+    line=${line//$'\xc2\xa0'/ }  # NBSP -> space; see fm_tmux_composer_state
     trimmed="${line#"${line%%[![:space:]]*}"}"
     trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
     [ -n "$trimmed" ] || continue

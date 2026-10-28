@@ -5,6 +5,8 @@
 # First, always warn if the firstmate primary checkout (FM_ROOT) is on a named
 # non-default branch, because that means firstmate-on-itself work landed in the
 # primary instead of an isolated worktree.
+# Next, always warn if the away-mode daemon left a live inject-wedged marker
+# (state/.subsuper-inject-wedged): escalations that never reached the pane.
 # Then, if any task is in flight (a state/<id>.meta exists) and the watcher's
 # liveness beacon (state/.last-watcher-beat, touched every poll cycle) is
 # missing or older than FM_GUARD_GRACE seconds, prints a loud, clearly delimited
@@ -57,6 +59,37 @@ if [ -n "$tangle_branch" ]; then
       printf "●  then re-validate '%s' in a proper isolated worktree.\n" "$tangle_branch"
     fi
     printf '●%s\n' "$trule"
+  } >&2
+fi
+
+# Away-mode wedge alarm, also independent of in-flight tasks: the away-mode
+# daemon writes state/.subsuper-inject-wedged when buffered escalations could not
+# reach the supervisor pane past FM_MAX_DEFER_SECS, and removes it on the next
+# successful delivery. A live marker means real escalations (possibly the
+# captain's own mail) never reached firstmate, so it rides the next fleet action
+# instead of hiding behind an idle operator (incident afk-escalate-channel).
+wedge_marker="$STATE/.subsuper-inject-wedged"
+if [ -s "$wedge_marker" ]; then
+  wrule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+  wedge_head=$(sed -n 1p "$wedge_marker" 2>/dev/null)
+  wedge_oob=$(grep -m1 '^Out-of-band email:' "$wedge_marker" 2>/dev/null || true)
+  wedge_items=0
+  [ -s "$STATE/.subsuper-escalations" ] && wedge_items=$(wc -l < "$STATE/.subsuper-escalations" | tr -d ' ')
+  {
+    printf '●%s\n' "$wrule"
+    printf '●  AWAY-MODE ESCALATIONS WEDGED - THEY NEVER REACHED THIS PANE\n'
+    printf '●  %s\n' "$wedge_head"
+    [ -n "$wedge_oob" ] && printf '●  %s\n' "$wedge_oob"
+    printf '●  %s escalation(s) still buffered; the marker lists what was undelivered:\n' "$wedge_items"
+    printf '●      cat %s\n' "$wedge_marker"
+    if [ "$READ_ONLY" -eq 1 ]; then
+      printf '●  This read-only session should report the wedge, not clear it.\n'
+    else
+      printf '●  Handle those items now (they may include the captain'"'"'s own mail), then clear the alarm:\n'
+      printf '●      rm -f %s\n' "$wedge_marker"
+    fi
+    printf '●  %s\n' "$CONTINUE_LINE"
+    printf '●%s\n' "$wrule"
   } >&2
 fi
 

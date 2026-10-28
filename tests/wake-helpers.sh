@@ -20,6 +20,11 @@ if [ -z "${FM_ROOT_OVERRIDE:-}" ]; then
   export FM_ROOT_OVERRIDE
 fi
 
+# The away-mode daemon's out-of-band wedge escape emails the captain through mail
+# mode (bin/fm-supervise-daemon.sh oob_deliver). A suite run from a configured
+# home must never send real mail, so it stays off unless a test opts in.
+export FM_OOB_MAIL=0
+
 # append_wake <state> <kind> <key> <payload>: append a wake record to the durable
 # queue in a subshell scoped to <state>, using the production wake library.
 append_wake() {

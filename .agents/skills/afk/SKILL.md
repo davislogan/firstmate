@@ -48,7 +48,7 @@ batched digest rather than per-wake injections.
 No `/back` is needed. The first genuine message is the return signal:
 
 - A message **without** the sentinel marker and **not** starting with `/afk` -> the captain is back.
-  Clear `state/.afk`, stop the daemon, flush one distilled "while you were out" catch-up (drain `state/.wake-queue`, summarize any pending escalations from `state/.subsuper-escalations` and any `state/.subsuper-inject-wedged` marker), and resume full per-wake responsiveness through the emitted primary-harness supervision protocol from session start.
+  Clear `state/.afk`, stop the daemon, flush one distilled "while you were out" catch-up (drain `state/.wake-queue`, summarize any pending escalations from `state/.subsuper-escalations` and any `state/.subsuper-inject-wedged` marker, then remove both once handled), and resume full per-wake responsiveness through the emitted primary-harness supervision protocol from session start.
 - A message **with** the sentinel marker (`FM_INJECT_MARK`, ASCII 0x1f) -> it
   is a daemon escalation; stay afk and process it.
 - Re-invoking `/afk` while already away -> stay afk (refresh the flag); this
@@ -97,14 +97,26 @@ afk mode the composer guard is belt-and-suspenders (no human is typing), but it
 protects against the race window between the captain returning and their
 message landing, and against the daemon's own previous injection sitting unsent.
 
-**Max-defer escape (the daemon must never silently wedge).**
-If anything stays buffered past `FM_MAX_DEFER_SECS` (default 300), the daemon
-attempts one normal flush, which still requires an idle pane and empty composer.
-If that submit cannot be confirmed, it raises a loud, rate-limited wedge alarm:
-an ERROR in the daemon log, a durable
-`state/.subsuper-inject-wedged` marker (surface it on the "while you were out"
-catch-up if present), and a flash on the supervisor client's status line.
-So a guard false-positive becomes a visible stall, never an unbounded silent no-op.
+**Max-defer escape (an escalation must never rot behind one broken channel).**
+This paragraph group is the one owner of the escape contract.
+If anything stays buffered past `FM_MAX_DEFER_SECS` (default 300), the daemon attempts one normal flush, which still requires an idle pane and empty composer.
+If that submit cannot be confirmed, the pane channel itself may be the fault (incident afk-escalate-channel: a composer false-positive deferred every escalation for 3.5 hours, including the captain's own emailed approval), so the daemon stops relying on it and does three things:
+
+1. **Emails the same digest out of band** (`oob_deliver` in `bin/fm-supervise-daemon.sh`).
+   It sends only the buffered digest, only to the configured `FM_MAIL_CAPTAIN` address(es), from `FM_MAIL_INTAKE`, through the mail tool `fmm_resolve_axi` resolves, and only when mail mode is on with `FM_MAIL_SEND=1`.
+   It fails closed on anything else (malformed address, unresolved tool, `FM_OOB_MAIL=0`) and records why.
+   It is rate-limited to one attempt per `FM_OOB_MIN_INTERVAL_SECS` (default 1800), counting failed attempts because a failed send may still have gone out, and never re-sends a digest whose content was already emailed.
+   The buffer is kept, so the terminal still gets the digest once the pane recovers.
+2. **Writes `state/.subsuper-inject-wedged`**, recording the wedge age, the out-of-band outcome, and the undelivered items, plus an ERROR log line and a tmux status-line flash.
+3. **Rides firstmate's next fleet action**: `bin/fm-guard.sh` prints a bordered alarm for a live marker, independent of in-flight tasks and of away mode, so a wedge cannot hide behind an idle operator.
+   Handle the listed items, then remove the marker; a successful delivery also removes it.
+
+**Why there is no forced last-resort submit.**
+Typing and submitting regardless of the composer guard, then verifying, was considered and rejected.
+When the guard is right, the composer holds real text: usually the captain's half-typed line from before they left.
+A forced submit would merge the digest into that text and send it, so the captain's unfinished sentence goes out as if they had sent it, and because the line no longer starts with `FM_INJECT_MARK` firstmate would read it as the captain returning.
+No post-submit check can undo that, and an absent captain would not see it happen.
+The out-of-band email reaches the same reader without that risk, so the guard stays strict and the escape goes around it instead.
 
 ## Submit model
 
@@ -151,6 +163,11 @@ Classify each wake this way:
   every `FM_HEARTBEAT_SCAN_SECS` (default 300s) as the catch-all for a
   captain-relevant status line the per-wake classifier might miss.
 - Unknown reason, or any uncertainty -> escalate fail-safe.
+- `check` reporting `mail-request <req>` from the mail-mode poll -> **captain mail**: escalate and flush immediately, bypassing the batch window, as an item starting `CAPTAIN MAIL`.
+  The captain is speaking, so it must not sit behind a 90-second batch.
+  The daemon does not clear `state/.afk` itself: injection is presence-gated on that flag, so clearing it would silence the channel carrying the mail to firstmate.
+  Firstmate handles a `CAPTAIN MAIL` item first, through `fm-mail-respond`, with mail mode's own authority limits.
+  It stays afk: an email is the channel an away captain uses, and only a real terminal message is the return signal.
 
 Escalations are buffered up to `FM_ESCALATE_BATCH_SECS` (default 90s; 0 =
 immediate) and flushed as one single-line digest prefixed with the sentinel
@@ -176,13 +193,7 @@ the marker lets firstmate distinguish it from a real captain message.
   suggestions can look like pending input and stall supervision. `FM_COMPOSER_IDLE_RE`
   still overrides empty-composer matching after dim-ghost and border stripping,
   and `FM_BUSY_REGEX` overrides busy footers.
-- **Max-defer escape** - the daemon must never silently wedge. If anything stays
-  buffered past `FM_MAX_DEFER_SECS` (default 300s), the daemon attempts one
-  normal flush, which still requires an idle pane and empty composer. If that
-  cannot confirm a submit, it raises a loud, rate-limited wedge alarm: ERROR log,
-  durable `state/.subsuper-inject-wedged` marker, and a status-line flash. A
-  composer false-positive surfaces as a visible stall, never an unbounded silent
-  no-op.
+- **Max-defer escape** - see "Max-defer escape" under "Busy-guard and composer guard" above: retry once, then email the captain out of band, write the wedge marker, and alarm through `bin/fm-guard.sh`.
 - **Verified type-once submit model** - the digest is typed once (`send-keys -l`
   on tmux, `pane send-text` on herdr), then submitted with Enter and verified.
   Enter is retried, Enter only and never a retype, until the backend submit

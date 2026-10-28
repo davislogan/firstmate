@@ -75,7 +75,7 @@ tests/fm-wake-queue.test.sh               # durable wake queue losslessness, cat
 tests/fm-watcher-lock.test.sh             # watcher singleton, lock-race, PID identity stability, watch-arm liveness and detached-watcher survival/expiry, and guard-warning tests
 tests/fm-turnend-guard.test.sh            # shared supervision predicate plus Claude Stop-hook scoping, loop guard, fail-open, and live watcher health tests
 tests/fm-watch-triage.test.sh             # always-on watcher triage: benign absorb, actionable surface, stale status-log override, parked-stale de-dup (an already-escalated unchanged gate absorbed despite pane-hash drift, re-surfaced on a changed captain-relevant line), wedge threshold, repeated wedge demand marker and escalation cap, dead-agent stale surfacing, heartbeat backstop, and afk one-shot coherence
-tests/fm-daemon.test.sh                   # sub-supervisor classifier, /afk presence-gating, fm-afk-start daemon-lock lifecycle, max-defer, composer, and fm-send submit tests
+tests/fm-daemon.test.sh                   # sub-supervisor classifier, /afk presence-gating, fm-afk-start daemon-lock lifecycle, max-defer, out-of-band wedge email, captain-mail fast path, fm-guard wedge banner, real captured idle-pane composer, and fm-send submit tests
 tests/fm-send-settle.test.sh              # fm-send post-submit settle pause, tuning, disable, and --key bypass tests
 tests/fm-send-popup-settle.test.sh        # fm-send pre-Enter popup-settle selection for slash commands and codex $skill invocations
 tests/fm-send-secondmate-marker.test.sh   # fm-send from-firstmate marker for kind=secondmate targets: marked vs crewmate/explicit/--key, and the exact marker byte sequence

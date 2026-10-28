@@ -757,6 +757,7 @@ So the next time you touch the fleet with queued wakes or no watcher alive, the 
 The grace window keeps normal handling (watcher briefly down between a wake and the next supervision resume) silent.
 If a guard warning says queued wakes are pending, drain them before doing anything else.
 If a guard warning says watcher liveness is stale, drain any queued wakes and then resume the emitted supervision protocol.
+If a guard warning says away-mode escalations are wedged, handle the buffered items it lists before anything else; the `/afk` skill owns that contract.
 
 `fm-guard.sh` carries a second, independent alarm in the same bordered ●-marked style: the **worktree-tangle** guard.
 Firstmate is a treehouse-pooled git repo of itself - the primary checkout (the repo root, `FM_ROOT`) and every crewmate worktree and secondmate home are linked worktrees of one repo - and the primary must stay on its default branch.

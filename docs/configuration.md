@@ -444,7 +444,10 @@ FM_SUPERVISOR_BACKEND=             # optional supervisor pane backend override; 
 FM_SUPERVISOR_TARGET=              # optional supervisor pane target override; tmux target or herdr <session>:<pane-id>, otherwise auto-detected
 FM_INJECT_SKIP=heartbeat           # |-prefixes force-self-handled bypassing classification; empty disables
 FM_ESCALATE_BATCH_SECS=90          # buffer window for batched escalation digests; 0 = flush immediately
-FM_MAX_DEFER_SECS=300              # max buffered escalation age before retry plus wedge alarm; 0 disables
+FM_MAX_DEFER_SECS=300              # max buffered escalation age before retry, out-of-band email, and wedge alarm; 0 disables
+FM_OOB_MAIL=1                      # 0 stops the max-defer escape from emailing the buffered digest to FM_MAIL_CAPTAIN (needs mail mode and FM_MAIL_SEND=1)
+FM_OOB_MIN_INTERVAL_SECS=1800      # min seconds between out-of-band email attempts; an unchanged digest is never re-sent
+FM_OOB_TIMEOUT_SECS=90             # per-send timeout for the out-of-band mail tool call
 FM_INJECT_FAIL_SLEEP=30            # seconds to back off when the supervisor pane is unavailable
 FM_INJECT_CONFIRM_RETRIES=3        # daemon Enter-retry attempts after typing a digest once
 FM_INJECT_CONFIRM_SLEEP=0.5        # seconds between daemon submit checks

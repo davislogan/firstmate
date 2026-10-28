@@ -41,9 +41,11 @@
 #     crewmate is therefore detected within STALE_ESCALATE_SECS + a tick, never
 #     lost. Crewmates are autonomous, so a delayed stale response does not stall
 #     a healthy crewmate's own progress.
-#     Buffered escalation delivery also has a max-defer alarm: if a digest stays
-#     undelivered past FM_MAX_DEFER_SECS, the daemon retries a normal flush and
-#     writes state/.subsuper-inject-wedged if submit still cannot be confirmed.
+#     Buffered escalation delivery also has a max-defer escape: if a digest stays
+#     undelivered past FM_MAX_DEFER_SECS, the daemon retries a normal flush; if
+#     submit still cannot be confirmed it emails the same digest to the captain
+#     out of band (oob_deliver) and writes state/.subsuper-inject-wedged, which
+#     bin/fm-guard.sh surfaces on firstmate's next fleet action.
 #   - Cheap heartbeat catch-all: every HEARTBEAT_SCAN_SECS the daemon greps all
 #     state/*.status for a captain-relevant line the per-wake classifier might
 #     have missed (e.g. a status verb outside CAPTAIN_RE) and escalates it.
@@ -93,8 +95,16 @@
 #                                   bare prompt glyphs plus busy footers)
 #          FM_MAX_DEFER_SECS        max seconds a buffered escalation may sit
 #                                   undelivered before one normal flush attempt;
-#                                   if that cannot confirm a submit, a wedge
-#                                   alarm fires (default 300; 0 disables)
+#                                   if that cannot confirm a submit, the digest
+#                                   is emailed out of band (FM_OOB_MAIL) and a
+#                                   wedge alarm fires (default 300; 0 disables)
+#          FM_OOB_MAIL              1 (default) lets the max-defer escape email
+#                                   the buffered digest to FM_MAIL_CAPTAIN when
+#                                   the pane cannot take it (needs mail mode on
+#                                   and FM_MAIL_SEND=1); 0 disables
+#          FM_OOB_MIN_INTERVAL_SECS min seconds between out-of-band email
+#                                   attempts (default 1800)
+#          FM_OOB_TIMEOUT_SECS      per-send timeout for the mail tool (default 90)
 #          FM_INJECT_CONFIRM_RETRIES Enter-retry attempts on a swallowed Enter
 #                                   (default 3); the digest is typed once, only
 #                                   Enter is retried. Composer-empty detection is
@@ -135,6 +145,12 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$FM_DAEMON_DIR/fm-classify-lib.sh"
 
+# Mail-mode config + mail tool resolution, used ONLY by the out-of-band wedge
+# escape (oob_deliver). Function-only library: sourcing it reads nothing and
+# sends nothing.
+# shellcheck source=bin/fm-mail-lib.sh
+. "$FM_DAEMON_DIR/fm-mail-lib.sh"
+
 # --- tunables ---------------------------------------------------------------
 FM_SUPERVISOR_TARGET_DEFAULT="firstmate:0"
 # Fallback BACKEND paired with the fallback target above: "firstmate:0" is a
@@ -159,6 +175,11 @@ HOUSEKEEPING_TICK_DEFAULT=15
 # the normal flush path and, if that cannot confirm a submit, raises a loud wedge
 # alarm. The escape hatch makes a guard false-positive visible instead of silent.
 MAX_DEFER_SECS_DEFAULT=300
+# Out-of-band wedge escape (oob_deliver): the minimum seconds between two
+# email attempts, so a long wedge cannot spam the captain, and the per-send
+# timeout so a hung mail tool cannot stall housekeeping.
+OOB_MIN_INTERVAL_SECS_DEFAULT=1800
+OOB_TIMEOUT_SECS_DEFAULT=90
 # The captain-relevant verb set and the status classifiers (last_status_line,
 # status_is_captain_relevant, window_to_task, scan_captain_relevant_statuses) now
 # live in bin/fm-classify-lib.sh, shared with the always-on watcher.
@@ -549,7 +570,7 @@ escalate_flush() {  # <state>
   # Single-line wrapper: no embedded newlines (inject_msg also collapses as a
   # safety net, but keeping the source single-line makes the intent explicit).
   msg=$(printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$n" "$msg")
-  if inject_msg "$msg" "$state"; then : > "$buf"; rm -f "${buf}.since" "$state/.subsuper-inject-wedged"; return 0; fi
+  if inject_msg "$msg" "$state"; then : > "$buf"; rm -f "${buf}.since" "$state/.subsuper-inject-wedged" "$state/.subsuper-oob-sent"; return 0; fi
   return 1
 }
 
@@ -569,7 +590,9 @@ inject_wedge_alarm() {  # <state> <age-seconds>
   log "ERROR: away-mode escalation undelivered ${age}s; inject could not confirm a submit (supervisor pane busy or wedged). Buffer + wake-queue preserved; alarm marker written."
   {
     printf 'fm away-mode inject WEDGED: %ss undelivered as of %s\n' "$age" "$(date '+%Y-%m-%dT%H:%M:%S%z')"
-    printf 'The supervisor pane could not accept an escalation. Buffered items:\n'
+    printf 'The supervisor pane could not accept an escalation.\n'
+    printf 'Out-of-band email: %s\n' "${OOB_STATUS:-not attempted}"
+    printf 'Buffered items:\n'
     cat "$state/.subsuper-escalations" 2>/dev/null
   } > "$marker" 2>/dev/null || true
   target="${FM_SUPERVISOR_TARGET:-$FM_SUPERVISOR_TARGET_DEFAULT}"
@@ -581,6 +604,90 @@ inject_wedge_alarm() {  # <state> <age-seconds>
   if [ "$backend" = tmux ]; then
     tmux display-message -t "$target" "fm: away-mode escalations WEDGED ${age}s — see $marker" 2>/dev/null || true
   fi
+}
+
+# Out-of-band escape for a wedged pane channel. When the max-defer flush cannot
+# confirm a submit, the pane path itself may be the fault (a composer-guard
+# false-positive deferred 100% of escalations for 3.5h in incident
+# afk-escalate-channel), so retrying it can never help. This emails the SAME
+# buffered digest to the captain through mail mode instead.
+#
+# Fail closed, by construction:
+#   - only the buffered digest is sent (state/.subsuper-escalations, control
+#     bytes stripped), written to a body file, never inlined into a command;
+#   - only to the configured FM_MAIL_CAPTAIN address(es), each strictly
+#     validated, sent from FM_MAIL_INTAKE; mail-axi's own send allowlist is the
+#     second, independent check;
+#   - only when mail mode is on, FM_MAIL_SEND=1, FM_OOB_MAIL is not 0, and the
+#     mail tool resolves through fmm_resolve_axi (never a PATH guess).
+# Rate-limited and deduplicated: at most one attempt per
+# FM_OOB_MIN_INTERVAL_SECS (state/.subsuper-oob-attempt, written BEFORE the
+# send, because a failed send may still have gone out), and a digest whose
+# content hash was already emailed is never re-sent (state/.subsuper-oob-sent).
+# Sets OOB_STATUS to a one-line outcome for the wedge marker. Returns 0 when the
+# current digest has reached the captain by email, 1 otherwise.
+OOB_STATUS=
+oob_deliver() {  # <state> <age-seconds>
+  local state=$1 age=$2 buf body sent attempt hash addr subject n rc
+  local -a to_args=() cmd=() addrs=()
+  buf="$state/.subsuper-escalations"
+  sent="$state/.subsuper-oob-sent"
+  attempt="$state/.subsuper-oob-attempt"
+  OOB_STATUS=
+  [ -s "$buf" ] || { OOB_STATUS="nothing buffered"; return 0; }
+  [ "${FM_OOB_MAIL:-1}" != 0 ] || { OOB_STATUS="disabled (FM_OOB_MAIL=0)"; return 1; }
+  fmm_load_config
+  fmm_enabled || { OOB_STATUS="unavailable: mail mode is off"; return 1; }
+  fmm_send_enabled || { OOB_STATUS="unavailable: FM_MAIL_SEND is not 1"; return 1; }
+  IFS=$', ;\t\n' read -r -d '' -a addrs < <(printf '%s,%s\0' "$FMM_INTAKE" "$FMM_CAPTAIN")
+  for addr in "${addrs[@]}"; do
+    [ -n "$addr" ] || continue
+    case "$addr" in
+      *[!A-Za-z0-9._%+@-]*|*@*@*|@*|*@|.*) OOB_STATUS="refused: malformed mail address in config"; log "ERROR: out-of-band email refused: malformed address in mail config"; return 1 ;;
+      *@*.*) ;;
+      *) OOB_STATUS="refused: malformed mail address in config"; log "ERROR: out-of-band email refused: malformed address in mail config"; return 1 ;;
+    esac
+  done
+  case "$FMM_INTAKE" in *[,\;[:space:]]*) OOB_STATUS="refused: FM_MAIL_INTAKE must be one address"; return 1 ;; esac
+  IFS=$', ;\t\n' read -r -d '' -a addrs < <(printf '%s\0' "$FMM_CAPTAIN")
+  for addr in "${addrs[@]}"; do [ -z "$addr" ] || to_args+=(--to "$addr"); done
+  [ "${#to_args[@]}" -gt 0 ] || { OOB_STATUS="unavailable: no captain address"; return 1; }
+  hash=$(_hash_text "$(cat "$buf" 2>/dev/null)")
+  if [ "$(sed -n 2p "$sent" 2>/dev/null)" = "$hash" ]; then
+    OOB_STATUS="already emailed this digest at $(sed -n 1p "$sent" 2>/dev/null)"
+    return 0
+  fi
+  if [ "$(_file_age "$attempt")" -lt "${FM_OOB_MIN_INTERVAL_SECS:-$OOB_MIN_INTERVAL_SECS_DEFAULT}" ]; then
+    OOB_STATUS="rate-limited: last attempt $(_file_age "$attempt")s ago"
+    return 1
+  fi
+  fmm_resolve_axi || { OOB_STATUS="unavailable: $FMM_AXI_ERROR"; log "ERROR: out-of-band email unavailable: $FMM_AXI_ERROR"; return 1; }
+  body=$(mktemp "${TMPDIR:-/tmp}/fm-oob-body.XXXXXX") || { OOB_STATUS="failed: could not write body file"; return 1; }
+  n=$(wc -l < "$buf" 2>/dev/null | tr -d ' ')
+  {
+    printf 'Firstmate could not deliver %s away-mode escalation(s) to its terminal for %ss.\n' "$n" "$age"
+    printf 'This is the same digest it tried to show there. Nothing is lost; it is still buffered for the terminal.\n'
+    printf 'Reply to an intake request, or return to the terminal, to act on it.\n\n'
+    LC_ALL=C tr -d '\000-\010\013-\037\177' < "$buf"
+  } > "$body" 2>/dev/null || { rm -f "$body"; OOB_STATUS="failed: could not write body file"; return 1; }
+  subject="firstmate: ${n} away-mode escalation(s) undelivered for $(( age / 60 ))m"
+  _now > "$attempt"
+  cmd=("$FMM_AXI" send --mailbox "$FMM_INTAKE" "${to_args[@]}" --subject "$subject" --body-file "$body")
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${FM_OOB_TIMEOUT_SECS:-$OOB_TIMEOUT_SECS_DEFAULT}" "${cmd[@]}" >/dev/null 2>&1; rc=$?
+  else
+    "${cmd[@]}" >/dev/null 2>&1; rc=$?
+  fi
+  rm -f "$body"
+  if [ "$rc" -eq 0 ]; then
+    printf '%s\n%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$hash" > "$sent"
+    OOB_STATUS="emailed the captain at $(sed -n 1p "$sent")"
+    log "out-of-band: emailed the buffered digest ($n item(s), ${age}s undelivered) to the captain"
+    return 0
+  fi
+  OOB_STATUS="failed: mail send exited $rc (it may still have gone out; next attempt after the rate limit)"
+  log "ERROR: out-of-band email failed (rc=$rc); next attempt after FM_OOB_MIN_INTERVAL_SECS"
+  return 1
 }
 
 _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first arrived (sidecar epoch)
@@ -599,8 +706,8 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #  1) batch flush: if the escalation buffer's oldest content is older than
 #     ESCALATE_BATCH_SECS (or batching is disabled), inject one digest.
 #  1b) max-defer escape: if the buffer is STILL undelivered past MAX_DEFER_SECS,
-#     attempt one normal delivery; if it cannot confirm, raise the wedge alarm.
-#     Never silently defer forever.
+#     attempt one normal delivery; if it cannot confirm, email the digest out of
+#     band (oob_deliver) and raise the wedge alarm. Never silently defer forever.
 #  2) stale recheck: for each pending stale marker past STALE_ESCALATE_SECS,
 #     re-peek the pane; still idle -> escalate (wedge); resumed -> clear marker.
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, grep state/*.status for a
@@ -620,8 +727,8 @@ housekeeping() {  # <state>
   fi
 
   # (1b) max-defer escape. If anything is still buffered past MAX_DEFER_SECS,
-  # retry the normal delivery path. If that still cannot confirm, raise a loud
-  # wedge alarm while preserving the buffer.
+  # retry the normal delivery path. If that still cannot confirm, email the
+  # digest out of band and raise a loud wedge alarm while preserving the buffer.
   max_defer=${FM_MAX_DEFER_SECS:-$MAX_DEFER_SECS_DEFAULT}
   if afk_active "$state" && [ "$max_defer" -gt 0 ] && [ -s "$state/.subsuper-escalations" ]; then
     oldest=$(_oldest_line_age "$state/.subsuper-escalations")
@@ -634,6 +741,9 @@ housekeeping() {  # <state>
         log "inject recovered: max-defer flush succeeded after ${oldest}s undelivered"
         rm -f "$state/.subsuper-inject-wedged"
       else
+        # The pane channel failed past max-defer: do not just retry it. Deliver
+        # the same digest out of band, then record the outcome in the alarm.
+        oob_deliver "$state" "$oldest" || true
         inject_wedge_alarm "$state" "$oldest"
       fi
     fi
@@ -794,6 +904,20 @@ is_wake_reason() {  # <reason>
   return 1
 }
 
+# wake_is_captain_mail: 0 iff <reason> is the mail-mode poll reporting a new
+# authenticated captain request ("check: <...>/mail-watch.check.sh: mail-request
+# <req>", bin/fm-mail-poll.sh). That is the captain speaking, not a routine wake,
+# so handle_wake flushes it immediately instead of batching it. It deliberately
+# does NOT clear state/.afk: injection is presence-gated on that flag, so clearing
+# it here would silence the one channel carrying the mail to firstmate (the /afk
+# skill owns what firstmate does with it).
+wake_is_captain_mail() {  # <reason>
+  case "$1" in
+    check:*mail-watch.check.sh:\ mail-request\ *) return 0 ;;
+  esac
+  return 1
+}
+
 # --- dispatch one wake reason to self-handle or escalate --------------------
 # Side effects: logging, marker records, escalation buffer appends.
 handle_wake() {  # <reason> <state>
@@ -814,6 +938,13 @@ handle_wake() {  # <reason> <state>
   esac
   action=${decision%%|*}
   distilled=${decision#*|}
+  if [ "$action" = "escalate" ] && wake_is_captain_mail "$reason"; then
+    # The captain is speaking: never hold it in a batch window.
+    log "escalate (captain mail, immediate): $reason"
+    escalate_add "$state" "CAPTAIN MAIL - the captain wrote in; handle it now: $distilled"
+    escalate_flush "$state" || true
+    return
+  fi
   if [ "$action" = "escalate" ]; then
     log "escalate: $reason -> $distilled"
     escalate_add "$state" "$distilled"

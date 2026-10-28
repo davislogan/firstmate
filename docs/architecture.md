@@ -52,7 +52,7 @@ The daemon escalates only captain-relevant events as one batched, single-line di
 Its supervisor injection path supports tmux and herdr panes, with `FM_SUPERVISOR_BACKEND` and `FM_SUPERVISOR_TARGET` resolved independently from the task-spawn backend.
 Pane existence, busy checks, composer checks, capture, and verified submit route through `bin/fm-backend.sh`: tmux keeps the same submit core used by the tmux send backend, while herdr uses native busy state, native agent-state submit confirmation on idle baselines, and its ANSI-aware structural composer classifier for pending-input guards and submit fallback.
 Unsupported supervisor backends refuse at daemon startup.
-Stalled escalation delivery raises `state/.subsuper-inject-wedged` after `FM_MAX_DEFER_SECS` instead of silently deferring forever.
+Stalled escalation delivery, after `FM_MAX_DEFER_SECS`, emails the same digest to the captain through mail mode and raises `state/.subsuper-inject-wedged`, which `bin/fm-guard.sh` surfaces on firstmate's next fleet action, instead of silently deferring forever (the `/afk` skill owns the contract).
 `fm-send.sh` selects a pre-Enter popup-settle for slash commands and for codex `$...` skill invocations using metadata-routed target `harness=` values, then adds its own `FM_SEND_SETTLE` pause after successful text sends so immediate peeks catch the receiving turn starting; the sub-supervisor uses only the shared submit core and does not pay that post-submit pause.
 
 ## Runtime session backends

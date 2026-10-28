@@ -2,7 +2,8 @@
 # tests/fm-daemon.test.sh - supervise-daemon classifiers, the captain-relevant
 # status-phrase matrix (a product contract), escalation batching/dedupe, afk
 # presence-gating, and the injection-hardening units that an e2e cannot
-# deterministically reach (persistent-Enter-swallow, max-defer wedge alarms,
+# deterministically reach (persistent-Enter-swallow, max-defer wedge alarms, the
+# out-of-band email escape, the captain-mail fast path, the fm-guard wedge banner,
 # fm-send swallow reporting, composer-pending ANSI parsing). The operator-visible
 # inject flow lives in fm-afk-inject-e2e and fm-wake-daemon-lifecycle-e2e.
 set -u
@@ -1021,6 +1022,190 @@ test_inject_msg_herdr_submits_through_backend_dispatch() {
   pass "inject_msg: dispatches busy-guard/composer-guard/submit through the herdr backend and succeeds on a confirmed empty composer"
 }
 
+# --- incident afk-escalate-channel ------------------------------------------
+# A real idle Claude Code supervisor pane (v2.1.312, captured 2026-10-27 from the
+# pane the daemon deferred against for 12683s) draws its empty composer as "❯" +
+# NO-BREAK SPACE. tests/fixtures/supervisor-panes/ holds that exact capture:
+# the styled cursor row (capture-pane -e) and the plain rows around it.
+SUPERVISOR_FIX="$ROOT/tests/fixtures/supervisor-panes"
+
+test_real_idle_supervisor_capture_is_deliverable() {
+  local dir state fakebin sent
+  dir=$(make_bordered_case real-idle-supervisor)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  sent="$dir/sent.log"; : > "$sent"
+  cp "$SUPERVISOR_FIX/claude-idle-nbsp.cursor.ansi" "$dir/composer"
+  if PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" pane_input_pending "win"; then
+    fail "real idle claude supervisor capture read as pending input"
+  fi
+  printf '%s\n' "$(cat "$SUPERVISOR_FIX/claude-idle-nbsp.tail.txt")" | grep -v '^[[:space:]]*$' | tail -6 \
+    | grep -qiE "${FM_BUSY_REGEX:-$FM_TMUX_BUSY_REGEX_DEFAULT}" \
+    && fail "real idle claude supervisor tail read as busy"
+  escalate_add "$state" "needs-decision: approve the plan"
+  afk_enter "$state"
+  PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
+    FM_INJECT_CONFIRM_SLEEP=0.05 escalate_flush "$state" \
+    || fail "daemon refused to deliver into a real idle claude supervisor pane"
+  grep -F 'approve the plan' "$sent" >/dev/null || fail "digest was not typed into the idle pane"
+  [ ! -s "$state/.subsuper-escalations" ] || fail "buffer not cleared after delivery to the idle pane"
+  pass "real idle claude supervisor capture (glyph + NBSP) is empty, not busy, and receives the digest"
+}
+
+# make_oob_case <name>: a wedged supervisor (persistent pending composer) plus a
+# fake mail tool that records every send's argv and body. Echoes the case dir.
+make_oob_case() {
+  local dir
+  dir=$(make_bordered_case "$1")
+  printf '│ > wedged by a detector false-positive │\n' > "$dir/composer"
+  cat > "$dir/fake-mail-axi" <<'SH'
+#!/usr/bin/env bash
+set -u
+log="${FM_FAKE_MAIL_LOG:?}"
+body=
+prev=
+for a in "$@"; do
+  [ "$prev" = --body-file ] && body=$a
+  prev=$a
+done
+{ printf 'ARGV:'; printf ' [%s]' "$@"; printf '\n'; [ -n "$body" ] && { printf 'BODY:\n'; cat "$body"; }; } >> "$log"
+exit "${FM_FAKE_MAIL_RC:-0}"
+SH
+  chmod +x "$dir/fake-mail-axi"
+  : > "$dir/mail.log"
+  printf '%s\n' "$dir"
+}
+
+# run_oob_housekeeping <dir> [env...]: one housekeeping pass with the buffer past
+# max-defer, mail mode configured for the captain only, and send opted in.
+run_oob_housekeeping() {
+  local dir=$1; shift
+  # shellcheck disable=SC2016 # $1/$2 expand inside the child bash, not here.
+  env PATH="$dir/fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$dir/sent.log" \
+    FM_FAKE_MAIL_LOG="$dir/mail.log" FM_MAIL_ENV_FILE="$dir/no-such.env" \
+    FM_OOB_MAIL=1 FM_MAIL_INTAKE=intake@example.test FM_MAIL_CAPTAIN=captain@example.test \
+    FM_MAIL_SEND=1 FM_MAIL_AXI="$dir/fake-mail-axi" FM_MAIL_TENANT=t \
+    FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=60 FM_INJECT_CONFIRM_SLEEP=0.05 \
+    "$@" bash -c '. "$1"; housekeeping "$2"' _ "$DAEMON" "$dir/state"
+}
+
+age_buffer_and_alarm() {  # <state>: buffer past max-defer, alarm throttle expired
+  echo $(( $(date +%s) - 600 )) > "$1/.subsuper-escalations.since"
+  [ -e "$1/.subsuper-inject-wedged" ] && touch -d '@'"$(( $(date +%s) - 600 ))" "$1/.subsuper-inject-wedged"
+  return 0
+}
+
+test_max_defer_wedge_emails_captain_out_of_band() {
+  local dir state
+  dir=$(make_oob_case oob-email); state="$dir/state"
+  escalate_add "$state" "check: mail-request 20261027-2114-63b86f"
+  escalate_add "$state" "needs-decision: pick A"
+  age_buffer_and_alarm "$state"; afk_enter "$state"
+  run_oob_housekeeping "$dir"
+  [ "$(grep -c '^ARGV:' "$dir/mail.log")" -eq 1 ] || fail "wedge did not email exactly once: $(cat "$dir/mail.log")"
+  grep -F '[send] [--mailbox] [intake@example.test] [--to] [captain@example.test] [--subject]' "$dir/mail.log" >/dev/null \
+    || fail "out-of-band email not addressed captain-only from the intake mailbox: $(cat "$dir/mail.log")"
+  [ "$(grep -o '\[--to\]' "$dir/mail.log" | wc -l)" -eq 1 ] || fail "out-of-band email had extra recipients"
+  grep -F 'needs-decision: pick A' "$dir/mail.log" >/dev/null || fail "emailed body lacks the buffered digest"
+  grep -F 'mail-request 20261027-2114-63b86f' "$dir/mail.log" >/dev/null || fail "emailed body lacks the captain-mail item"
+  grep -F 'Out-of-band email: emailed the captain' "$state/.subsuper-inject-wedged" >/dev/null \
+    || fail "wedge marker does not record the out-of-band delivery"
+  [ -s "$state/.subsuper-escalations" ] || fail "buffer dropped after out-of-band email (pane must still get it)"
+  [ ! -s "$dir/sent.log" ] || fail "daemon typed over a pending composer"
+  pass "max-defer wedge emails the same digest to the captain only, records it, and keeps the buffer"
+}
+
+test_oob_email_dedupes_and_rate_limits() {
+  local dir state
+  dir=$(make_oob_case oob-dedupe); state="$dir/state"
+  escalate_add "$state" "blocked: live bot halted"
+  age_buffer_and_alarm "$state"; afk_enter "$state"
+  run_oob_housekeeping "$dir"
+  age_buffer_and_alarm "$state"
+  run_oob_housekeeping "$dir"
+  [ "$(grep -c '^ARGV:' "$dir/mail.log")" -eq 1 ] || fail "unchanged digest was emailed twice"
+  grep -F 'already emailed this digest' "$state/.subsuper-inject-wedged" >/dev/null \
+    || fail "dedupe outcome not recorded in the wedge marker"
+  escalate_add "$state" "failed: new item inside the rate-limit window"
+  age_buffer_and_alarm "$state"
+  run_oob_housekeeping "$dir"
+  [ "$(grep -c '^ARGV:' "$dir/mail.log")" -eq 1 ] || fail "rate limit let a second email through"
+  grep -F 'rate-limited' "$state/.subsuper-inject-wedged" >/dev/null || fail "rate limit not recorded"
+  age_buffer_and_alarm "$state"
+  run_oob_housekeeping "$dir" FM_OOB_MIN_INTERVAL_SECS=0
+  [ "$(grep -c '^ARGV:' "$dir/mail.log")" -eq 2 ] || fail "changed digest not emailed after the rate limit elapsed"
+  pass "out-of-band email dedupes an unchanged digest and rate-limits changed ones"
+}
+
+test_oob_email_fails_closed() {
+  local dir state
+  dir=$(make_oob_case oob-closed); state="$dir/state"
+  escalate_add "$state" "needs-decision: pick A"
+  age_buffer_and_alarm "$state"; afk_enter "$state"
+  run_oob_housekeeping "$dir" FM_MAIL_SEND=0
+  [ ! -s "$dir/mail.log" ] || fail "emailed without FM_MAIL_SEND=1"
+  grep -F 'FM_MAIL_SEND is not 1' "$state/.subsuper-inject-wedged" >/dev/null || fail "send-off outcome not recorded"
+  age_buffer_and_alarm "$state"
+  run_oob_housekeeping "$dir" FM_MAIL_CAPTAIN='captain@example.test,evil@x.test -o /etc/passwd'
+  [ ! -s "$dir/mail.log" ] || fail "emailed with a malformed captain address list"
+  grep -F 'refused: malformed mail address' "$state/.subsuper-inject-wedged" >/dev/null || fail "malformed refusal not recorded"
+  age_buffer_and_alarm "$state"
+  run_oob_housekeeping "$dir" FM_MAIL_AXI=relative-mail-axi
+  [ ! -s "$dir/mail.log" ] || fail "emailed through an unresolved mail tool"
+  age_buffer_and_alarm "$state"
+  run_oob_housekeeping "$dir" FM_OOB_MAIL=0
+  [ ! -s "$dir/mail.log" ] || fail "emailed with FM_OOB_MAIL=0"
+  age_buffer_and_alarm "$state"
+  run_oob_housekeeping "$dir" FM_FAKE_MAIL_RC=1
+  [ "$(grep -c '^ARGV:' "$dir/mail.log")" -eq 1 ] || fail "failed send not attempted exactly once"
+  grep -F 'failed: mail send exited 1' "$state/.subsuper-inject-wedged" >/dev/null || fail "send failure not recorded"
+  [ ! -e "$state/.subsuper-oob-sent" ] || fail "failed send recorded as delivered"
+  age_buffer_and_alarm "$state"
+  run_oob_housekeeping "$dir" FM_FAKE_MAIL_RC=1
+  [ "$(grep -c '^ARGV:' "$dir/mail.log")" -eq 1 ] || fail "failed send retried inside the rate limit (could spam)"
+  pass "out-of-band email fails closed (send off, bad address, bad tool, disabled) and rate-limits failed sends"
+}
+
+test_captain_mail_wake_bypasses_batching() {
+  local dir state fakebin sent
+  dir=$(make_bordered_case captain-mail-now)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  sent="$dir/sent.log"; : > "$sent"
+  afk_enter "$state"
+  PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
+    FM_ESCALATE_BATCH_SECS=99999 FM_INJECT_CONFIRM_SLEEP=0.05 \
+    handle_wake "check: /h/state/mail-watch.check.sh: mail-request 20261027-2122-5040bb" "$state"
+  grep -F 'CAPTAIN MAIL' "$sent" >/dev/null || fail "captain mail waited in the batch window"
+  grep -F 'mail-request 20261027-2122-5040bb' "$sent" >/dev/null || fail "captain mail digest lacks the request"
+  [ ! -s "$state/.subsuper-escalations" ] || fail "captain mail left in the buffer after delivery"
+  afk_active "$state" || fail "daemon cleared away mode itself (it must stay presence-gated)"
+  : > "$sent"
+  PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
+    FM_ESCALATE_BATCH_SECS=99999 FM_INJECT_CONFIRM_SLEEP=0.05 \
+    handle_wake "check: /h/state/t1.check.sh: merged: https://x/y/pull/1" "$state"
+  [ ! -s "$sent" ] || fail "a routine check bypassed batching"
+  [ -s "$state/.subsuper-escalations" ] || fail "routine check was not buffered"
+  wake_is_captain_mail "check: /h/state/x-watch.check.sh: x-mention 1" && fail "x mention misread as captain mail"
+  pass "captain mail flushes immediately; routine checks still batch; away mode stays set"
+}
+
+test_guard_surfaces_live_wedge_marker() {
+  local dir state out
+  dir="$TMP_ROOT/guard-wedge"; state="$dir/state"; mkdir -p "$state"
+  out=$(FM_ROOT_OVERRIDE="$dir" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-guard.sh" 2>&1)
+  assert_not_contains "$out" "WEDGED" "guard alarmed with no wedge marker"
+  printf 'fm away-mode inject WEDGED: 12683s undelivered as of then\nThe supervisor pane could not accept an escalation.\nOut-of-band email: emailed the captain at then\nBuffered items:\ncheck: mail-request r1\n' \
+    > "$state/.subsuper-inject-wedged"
+  printf 'check: mail-request r1\n' > "$state/.subsuper-escalations"
+  out=$(FM_ROOT_OVERRIDE="$dir" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-guard.sh" 2>&1)
+  assert_contains "$out" "●  AWAY-MODE ESCALATIONS WEDGED - THEY NEVER REACHED THIS PANE" "guard did not surface a live wedge with no tasks in flight"
+  assert_contains "$out" "12683s undelivered" "guard banner lacks the wedge age"
+  assert_contains "$out" "Out-of-band email: emailed the captain" "guard banner lacks the out-of-band outcome"
+  assert_contains "$out" "rm -f $state/.subsuper-inject-wedged $state/.subsuper-escalations $state/.subsuper-escalations.since" "guard banner lacks the clear instruction"
+  out=$(FM_GUARD_READ_ONLY=1 FM_ROOT_OVERRIDE="$dir" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-guard.sh" 2>&1)
+  assert_not_contains "$out" "rm -f" "read-only guard offered to clear the wedge"
+  pass "fm-guard surfaces a live inject-wedged marker in a bordered alarm on the next fleet action"
+}
+
 test_afk_start_refuses_when_flag_cannot_be_written
 test_afk_start_ignores_stale_pidfile_without_lock
 test_afk_start_reclaims_stale_daemon_lock_reused_pid
@@ -1080,3 +1265,9 @@ test_inject_msg_herdr_busy_guard_defers
 test_inject_msg_herdr_composer_guard_defers
 test_inject_msg_herdr_pane_gone_defers
 test_inject_msg_herdr_submits_through_backend_dispatch
+test_real_idle_supervisor_capture_is_deliverable
+test_max_defer_wedge_emails_captain_out_of_band
+test_oob_email_dedupes_and_rate_limits
+test_oob_email_fails_closed
+test_captain_mail_wake_bypasses_batching
+test_guard_surfaces_live_wedge_marker

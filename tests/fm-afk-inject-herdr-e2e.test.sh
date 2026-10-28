@@ -32,6 +32,11 @@
 # agent_not_found forever and never confirm a submission.
 set -u
 
+# The away-mode daemon's out-of-band wedge escape emails the captain through mail
+# mode (bin/fm-supervise-daemon.sh oob_deliver). A suite run from a configured
+# home must never send real mail, so it stays off unless a test opts in.
+export FM_OOB_MAIL=0
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DAEMON="$ROOT/bin/fm-supervise-daemon.sh"
 

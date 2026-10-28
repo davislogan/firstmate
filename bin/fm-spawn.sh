@@ -420,6 +420,26 @@ secondmate_registry_line() {
   grep -E "^- $id( |$)" "$reg" | tail -1 || true
 }
 
+# Classify a route's per-route model pin from the structured tail after the last
+# "; added <date>" only, so "model:" in charter or scope prose is ignored.
+# Prints "none", "pin <token>", or "malformed".
+secondmate_route_pin_state() {
+  local tail tok
+  tail=$(printf '%s\n' "$1" | sed -n 's/^.*; added [^;)[:space:]]*//p')
+  case "$tail" in
+    ''|')') echo none ;;
+    '; model: '*')')
+      tok=${tail#; model: }
+      tok=${tok%)}
+      case "$tok" in
+        ''|-*|*[!A-Za-z0-9._:/@+=\[\]-]*) echo malformed ;;
+        *) printf 'pin %s\n' "$tok" ;;
+      esac
+      ;;
+    *) echo malformed ;;
+  esac
+}
+
 secondmate_registry_value() {
   local id=$1 key=$2 line value
   line=$(secondmate_registry_line "$id") || return 1
@@ -427,7 +447,6 @@ secondmate_registry_value() {
   case "$key" in
     home) value=$(printf '%s\n' "$line" | sed -n 's/^[^(]*(home: \([^;)]*\);.*/\1/p') ;;
     projects) value=$(printf '%s\n' "$line" | sed -n 's/^[^(]*(home: [^;)]*; scope: [^;)]*; projects: \([^;)]*\); added .*/\1/p') ;;
-    model) value=$(printf '%s\n' "$line" | sed -n 's/^.*; added [^;)]*; model: \([^;)[:space:]]*\)[[:space:]]*[;)].*/\1/p') ;;
     *) return 1 ;;
   esac
   [ -n "$value" ] || return 1
@@ -440,23 +459,20 @@ secondmate_registry_value() {
 # --model - still relaunch the home on its pinned model. It outranks the
 # config/secondmate-harness model token above and applies whatever the harness
 # source; only an explicit --model wins over it. A raw launch command has no
-# model placeholder, so the pin is skipped there. A route that mentions model:
-# but does not parse to a valid pin fails the spawn closed. Crewmate/scout
+# model placeholder, so the pin is skipped there. A route whose tail after the
+# added date is anything but ")" or "; model: <token>)" fails the spawn closed. Crewmate/scout
 # spawns never read it.
 if [ "$KIND" = secondmate ] && [ "$MODEL_SET" -eq 0 ] && [ "$RAW_LAUNCH" -eq 0 ]; then
-  ROUTE_MODEL=$(secondmate_registry_value "$ID" model || true)
-  case "$ROUTE_MODEL" in
-    default) echo "warning: data/secondmates.md route for $ID pins model 'default', which is not a pin; ignoring" >&2 ;;
-    ''|-*|*[!A-Za-z0-9._:/@+=\[\]-]*)
-      ROUTE_LINE=$(secondmate_registry_line "$ID" || true)
-      case "$ROUTE_LINE" in
-        *model:*)
-          printf 'error: data/secondmates.md route for %s has a malformed model pin; refusing to spawn on an unpinned model.\n  route: %s\n  fix it with: bin/fm-home-seed.sh model %s <model>   (or "-" to clear)\n' "$ID" "$ROUTE_LINE" "$ID" >&2
-          exit 1
-          ;;
-      esac
+  ROUTE_LINE=$(secondmate_registry_line "$ID" || true)
+  ROUTE_PIN=$(secondmate_route_pin_state "$ROUTE_LINE")
+  case "$ROUTE_PIN" in
+    none) ;;
+    "pin default") echo "warning: data/secondmates.md route for $ID pins model 'default', which is not a pin; ignoring" >&2 ;;
+    "pin "*) MODEL=${ROUTE_PIN#pin } ;;
+    *)
+      printf 'error: data/secondmates.md route for %s has a malformed model pin; refusing to spawn on an unpinned model.\n  route: %s\n  fix it with: bin/fm-home-seed.sh model %s <model>   (or "-" to clear)\n' "$ID" "$ROUTE_LINE" "$ID" >&2
+      exit 1
       ;;
-    *) MODEL=$ROUTE_MODEL ;;
   esac
 fi
 

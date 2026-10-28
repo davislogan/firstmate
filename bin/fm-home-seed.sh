@@ -63,13 +63,38 @@ registry_home_for_line() {
 }
 
 # Per-route model pin: an optional "; model: <model>" field after the added date.
-registry_model_for_line() {
-  sed -n 's/^.*; added [^;)]*; model: \([^;)[:space:]]*\)[[:space:]]*[;)].*/\1/p'
+# Only the structured tail after the last "; added <date>" is inspected, so a
+# "model:" in the charter summary or scope prose is never mistaken for a pin.
+# Prints "none", "pin <token>", or "malformed".
+registry_pin_state() {
+  local tail tok
+  tail=$(sed -n 's/^.*; added [^;)[:space:]]*//p')
+  case "$tail" in
+    ''|')') echo none ;;
+    '; model: '*')')
+      tok=${tail#; model: }
+      tok=${tok%)}
+      case "$tok" in
+        ''|*[\;\)[:space:]]*) echo malformed ;;
+        *) printf 'pin %s\n' "$tok" ;;
+      esac
+      ;;
+    *) echo malformed ;;
+  esac
 }
 
-# Drop any model field so a line can be rewritten with exactly one.
+registry_model_for_line() {
+  local state
+  state=$(registry_pin_state)
+  case "$state" in
+    "pin "*) printf '%s\n' "${state#pin }" ;;
+  esac
+}
+
+# Rebuild the structured tail with no model field so a line can be rewritten
+# with exactly one, replacing a malformed tail too.
 registry_line_without_model() {
-  sed 's/; model: [^;)]*\([;)]\)/\1/'
+  sed 's/^\(.*; added [^;)[:space:]]*\).*$/\1)/'
 }
 
 # A model pin is one shell-safe token and never "default" (not a pin).
@@ -264,11 +289,11 @@ validate_registry() {
         "- "*)
           id=${line#- }
           id=${id%% *}
-          case "$line" in
-            *model:*)
-              model_pin=$(printf '%s\n' "$line" | registry_model_for_line)
-              valid_model_pin "$model_pin" || bad_models="${bad_models}${bad_models:+, }$id"
-              ;;
+          model_pin=$(printf '%s\n' "$line" | registry_pin_state)
+          case "$model_pin" in
+            none) ;;
+            "pin "*) valid_model_pin "${model_pin#pin }" || bad_models="${bad_models}${bad_models:+, }$id" ;;
+            *) bad_models="${bad_models}${bad_models:+, }$id" ;;
           esac
           registered_home=$(printf '%s\n' "$line" | registry_home_for_line)
           [ -n "$registered_home" ] || continue

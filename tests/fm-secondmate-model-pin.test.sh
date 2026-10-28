@@ -163,7 +163,7 @@ ROWS
 test_malformed_route_pin_fails_closed() {
   local route n w sm launchlog calls fakebin out status
   n=0
-  for route in 'model:claude-opus-5' 'model: opus 5'; do
+  for route in 'model:claude-opus-5' 'model: opus 5' 'model: ' 'mode: x'; do
     n=$((n + 1))
     w=$(new_world "malformed-$n")
     sm="$w/sm"
@@ -186,8 +186,37 @@ test_malformed_route_pin_fails_closed() {
     [ ! -s "$calls" ] || fail "'$route': no endpoint may be created: $(cat "$calls")"
     [ ! -s "$launchlog" ] || fail "'$route': no launch may be sent: $(cat "$launchlog")"
     assert_absent "$w/home/state/sm.meta" "'$route': a malformed pin must not write meta"
+    seed "$w/home/data" model sm claude-opus-5 || fail "'$route': the suggested fix command failed"
+    assert_grep "added 2026-01-01; model: claude-opus-5)" "$w/home/data/secondmates.md" "'$route': the fix did not rewrite the tail"
   done
   pass "P a malformed route pin fails the secondmate spawn closed before any endpoint or meta"
+}
+
+# A "model:" in the charter summary or scope prose is never read as a pin: with
+# no trailing field the route spawns on the default and validates; with a valid
+# trailing field the pin still applies.
+test_prose_model_is_not_a_pin() {
+  local tail exp n w sm launchlog out status meta
+  n=0
+  for tail in ')^default' '; model: claude-opus-5)^claude-opus-5'; do
+    n=$((n + 1))
+    exp=${tail#*^}; tail=${tail%^*}
+    w=$(new_world "prose-$n")
+    sm="$w/sm"
+    make_seeded_home "$sm" sm
+    printf -- '- sm - Owns model: training and eval (home: %s; scope: model: training work; projects: alpha; added 2026-01-01%s\n' \
+      "$sm" "$tail" > "$w/home/data/secondmates.md"
+    launchlog="$w/launch.log"
+    out=$(spawn_sm "$w" sm "$launchlog" 2>&1); status=$?
+    expect_code 0 "$status" "prose model ($exp): spawn should succeed"$'\n'"$out"
+    meta="$w/home/state/sm.meta"
+    [ "$(meta_field "$meta" model)" = "$exp" ] \
+      || fail "prose model: meta model '$(meta_field "$meta" model)', expected '$exp'"
+    seed "$w/home/data" validate || fail "prose model ($exp): route should validate"
+    [ "$(seed "$w/home/data" model sm)" = "$([ "$exp" = default ] || printf '%s' "$exp")" ] \
+      || fail "prose model ($exp): model subcommand read the wrong pin"
+  done
+  pass "P a 'model:' in charter or scope prose is ignored; only the trailing field is a pin"
 }
 
 # ===========================================================================
@@ -427,6 +456,7 @@ test_harness_binary_resolution() {
 
 test_precedence_table
 test_malformed_route_pin_fails_closed
+test_prose_model_is_not_a_pin
 test_bootstrap_respawn_keeps_route_pin
 test_crew_and_scout_ignore_route_pin
 test_registry_model_subcommand

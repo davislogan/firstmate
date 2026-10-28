@@ -71,12 +71,22 @@ fm_test_tmproot() {
 #
 # fm_fakebin <dir> creates <dir>/fakebin and echoes it; prepend it to PATH to
 # shadow real tools with stubs. fm_fake_exit0 drops trivial exit-0 stubs for the
-# named tools into a fakebin dir.
+# named tools into a fakebin dir. Every fakebin also gets inert harness stubs
+# (fm_fake_harnesses) because fm-spawn.sh resolves the harness binary to an
+# absolute path and refuses to spawn when it is missing; the stubs keep spawn
+# tests hermetic and guarantee no real agent ever launches.
+
+FM_TEST_HARNESSES=(claude codex opencode pi grok)
 
 fm_fakebin() {
   local dir=$1 fakebin="$1/fakebin"
   mkdir -p "$fakebin"
+  fm_fake_harnesses "$fakebin"
   printf '%s\n' "$fakebin"
+}
+
+fm_fake_harnesses() {
+  fm_fake_exit0 "$1" "${FM_TEST_HARNESSES[@]}"
 }
 
 fm_fake_exit0() {

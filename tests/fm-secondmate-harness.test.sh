@@ -245,6 +245,7 @@ make_noop_tmux() {
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  fm_fake_harnesses "$fakebin"
   printf '%s\n' "$fakebin"
 }
 
@@ -441,6 +442,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  fm_fake_harnesses "$fakebin"
   printf '%s\n' "$fakebin"
 }
 

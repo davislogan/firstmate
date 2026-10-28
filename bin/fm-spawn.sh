@@ -46,6 +46,10 @@
 #   the file governs the spawn, its model/effort tokens are re-resolved on every
 #   respawn exactly like the harness axis, and explicit --model/--effort flags
 #   still win over the file's tokens.
+#   A --secondmate spawn also re-reads the route's optional "; model: <model>" pin
+#   from data/secondmates.md on every spawn; it outranks the file's model token and
+#   only an explicit --model wins over it. Precedence and format are owned by the
+#   secondmate-provisioning skill ("Per-route model pin").
 #   A --secondmate spawn also propagates the primary's declared inheritable config
 #   into the secondmate home's config/, so the secondmate's OWN crewmates,
 #   dispatch profiles, and backlog backend inherit the primary's settings
@@ -66,6 +70,11 @@
 #   multi-task shell loop (the tool shell is zsh, which does not word-split unquoted
 #   $vars and silently breaks ad-hoc `for ... in $pairs` loops).
 #   Launch templates live in launch_template() below; placeholders replaced before launch:
+#     __BIN__      the harness binary, resolved to an absolute path on this script's
+#                  PATH at spawn time. A pane whose shell never sourced the profile
+#                  would otherwise die with "command not found" before the agent
+#                  writes any status; an unresolvable binary aborts the spawn
+#                  before any endpoint is created. Raw launch commands are sent as-is.
 #     __BRIEF__    absolute path to data/<task-id>/brief.md
 #     __TURNEND__  absolute path to state/<task-id>.turn-ended (for harnesses whose
 #                  turn-end signal rides the launch command, e.g. codex -c notify=[...])
@@ -104,6 +113,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-secondmate-route-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-route-lib.sh"
 # Skip the watcher guard when re-exec'd for one pair of a batch (FM_SPAWN_NO_GUARD is
 # set by the batch loop below), so the guard runs once for the batch, not once per pair.
 [ -n "${FM_SPAWN_NO_GUARD:-}" ] || "$FM_ROOT/bin/fm-guard.sh" || true
@@ -316,20 +327,20 @@ launch_template() {
     # does NOT suppress the interactive ghost text (verified empirically), so the env
     # var is the correct control. The dim-aware composer reader in fm-tmux-lib.sh is
     # the defense-in-depth backstop for any pane this flag cannot reach.
-    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__"$(cat __BRIEF__)"' ;;
+    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false __BIN__ --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__"$(cat __BRIEF__)"' ;;
     codex)
       if [ "$kind" = secondmate ]; then
-        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(cat __BRIEF__)"'
+        printf '%s' '__BIN__ __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(cat __BRIEF__)"'
       else
-        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(cat __BRIEF__)"'
+        printf '%s' '__BIN__ __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(cat __BRIEF__)"'
       fi
       ;;
-    opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(cat __BRIEF__)"' ;;
+    opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' __BIN__ __MODELFLAG__--prompt "$(cat __BRIEF__)"' ;;
     pi)
       if [ "$kind" = secondmate ]; then
-        printf '%s' 'pi __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(cat __BRIEF__)"'
+        printf '%s' '__BIN__ __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(cat __BRIEF__)"'
       else
-        printf '%s' 'pi __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(cat __BRIEF__)"'
+        printf '%s' '__BIN__ __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(cat __BRIEF__)"'
       fi
       ;;
     # grok (Grok Build TUI): a positional prompt starts the supervised interactive
@@ -339,14 +350,16 @@ launch_template() {
     # --dangerously-skip-permissions. grok's turn-end signal does NOT ride the
     # launch command - it is a Stop-event hook installed below (global hook +
     # per-task pointer), so the template is identical for ship/scout/secondmate.
-    grok) printf '%s' 'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(cat __BRIEF__)"' ;;
+    grok) printf '%s' '__BIN__ --always-approve __MODELFLAG____EFFORTFLAG__"$(cat __BRIEF__)"' ;;
     *) return 1 ;;
   esac
 }
 
+RAW_LAUNCH=0
 case "$ARG3" in
   *' '*)  # raw launch command (unverified-adapter escape hatch)
     LAUNCH=$ARG3
+    RAW_LAUNCH=1
     HARNESS=""
     for word in $LAUNCH; do
       case "$word" in [A-Za-z_]*=*) continue ;; *) HARNESS=$(basename "$word"); break ;; esac
@@ -402,11 +415,16 @@ if [ "$KIND" = secondmate ] && [ -z "$ARG3" ]; then
   fi
 fi
 
-secondmate_registry_value() {
-  local id=$1 key=$2 reg line value
+secondmate_registry_line() {
+  local id=$1 reg
   reg="$DATA/secondmates.md"
   [ -f "$reg" ] || return 1
-  line=$(grep -E "^- $id( |$)" "$reg" | tail -1 || true)
+  grep -E "^- $id( |$)" "$reg" | tail -1 || true
+}
+
+secondmate_registry_value() {
+  local id=$1 key=$2 line value
+  line=$(secondmate_registry_line "$id") || return 1
   [ -n "$line" ] || return 1
   case "$key" in
     home) value=$(printf '%s\n' "$line" | sed -n 's/^[^(]*(home: \([^;)]*\);.*/\1/p') ;;
@@ -416,6 +434,29 @@ secondmate_registry_value() {
   [ -n "$value" ] || return 1
   printf '%s\n' "$value"
 }
+
+# Per-route model pin (secondmate-provisioning skill, "Per-route model pin").
+# Re-read from data/secondmates.md on EVERY --secondmate spawn, so recovery,
+# restart, the bootstrap liveness sweep, and /updatefirstmate - none of which pass
+# --model - still relaunch the home on its pinned model. It outranks the
+# config/secondmate-harness model token above and applies whatever the harness
+# source; only an explicit --model wins over it. A raw launch command has no
+# model placeholder, so the pin is skipped there. A route whose tail after the
+# added date is anything but ")" or "; model: <token>)" fails the spawn closed. Crewmate/scout
+# spawns never read it.
+if [ "$KIND" = secondmate ] && [ "$MODEL_SET" -eq 0 ] && [ "$RAW_LAUNCH" -eq 0 ]; then
+  ROUTE_LINE=$(secondmate_registry_line "$ID" || true)
+  ROUTE_PIN=$(fm_route_pin_state "$ROUTE_LINE")
+  case "$ROUTE_PIN" in
+    none) ;;
+    "pin default") echo "warning: data/secondmates.md route for $ID pins model 'default', which is not a pin; ignoring" >&2 ;;
+    "pin "*) MODEL=${ROUTE_PIN#pin } ;;
+    *)
+      printf 'error: data/secondmates.md route for %s has a malformed model pin; refusing to spawn on an unpinned model.\n  route: %s\n  fix it with: bin/fm-home-seed.sh model %s <model>   (or "-" to clear)\n' "$ID" "$ROUTE_LINE" "$ID" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 shell_quote() {
   printf "'"
@@ -641,6 +682,28 @@ else
   BRIEF="$DATA/$ID/brief.md"
 fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
+
+# Resolve the template's harness binary to an absolute path now, while this
+# script's PATH is known good, instead of sending a bare name that the pane's
+# shell may not find. Fail loudly here, before any endpoint exists, so the cause
+# is never only visible in a dead pane's scrollback.
+resolve_harness_bin() {
+  local name=$1 bin
+  bin=$(command -v -- "$name" 2>/dev/null || true)
+  case "$bin" in
+    /*) [ -f "$bin" ] && [ -x "$bin" ] || return 1 ;;
+    *) return 1 ;;
+  esac
+  printf '%s\n' "$bin"
+}
+case "$LAUNCH" in
+  *__BIN__*)
+    HARNESS_BIN=$(resolve_harness_bin "$HARNESS") || {
+      echo "error: harness binary '$HARNESS' not found as an executable on PATH ($PATH); install it or fix PATH - a bare '$HARNESS' would die in the pane with 'command not found' before the agent reports any status" >&2
+      exit 1
+    }
+    ;;
+esac
 
 # PROJ_ABS can still carry a symlinked path component (e.g. macOS's /tmp ->
 # /private/tmp) when it came from the ship/scout branch's logical `pwd` above.
@@ -1019,6 +1082,14 @@ sq_piwatch=$(shell_quote "$PROJ_ABS/state/fm-primary-pi-watch.ts")
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT")
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
+if [ -n "${HARNESS_BIN:-}" ]; then
+  # Quote only when needed so the common launch line stays readable in a pane.
+  case "$HARNESS_BIN" in
+    *[!A-Za-z0-9_./+-]*) sq_bin=$(shell_quote "$HARNESS_BIN") ;;
+    *) sq_bin=$HARNESS_BIN ;;
+  esac
+  LAUNCH=${LAUNCH//__BIN__/$sq_bin}
+fi
 LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
 LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
 LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}

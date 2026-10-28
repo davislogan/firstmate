@@ -118,9 +118,9 @@ test_no_profile_keeps_claude_launch_unchanged() {
   assert_meta_profile "$HOME_DIR/state/$id.meta" claude default default
 
   launch=$(cat "$LAUNCH_LOG")
-  expected="CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions \"\$(cat '$HOME_DIR/data/$id/brief.md')\""
+  expected="CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false $FAKEBIN_DIR/claude --dangerously-skip-permissions \"\$(cat '$HOME_DIR/data/$id/brief.md')\""
   [ "$launch" = "$expected" ] || fail "no-profile claude launch changed"$'\n'"expected: $expected"$'\n'"actual:   $launch"
-  pass "no --model/--effort records defaults and keeps the claude launch byte-identical"
+  pass "no --model/--effort records defaults and keeps the claude launch byte-identical apart from the resolved binary path"
 }
 
 test_active_dispatch_profile_requires_explicit_harness_for_ship() {

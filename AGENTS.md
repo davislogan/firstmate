@@ -306,6 +306,7 @@ So an absent or `default` `config/secondmate-harness` behaves exactly as before 
 The split is durable: every secondmate respawn (recovery, `/updatefirstmate`, restart) re-resolves from `config/secondmate-harness`, so it survives restarts without being recorded per-task.
 
 `config/secondmate-harness` can also pin a model/effort for the secondmate agent in one line (`<harness> [<model>] [<effort>]`); format, accessors, and inheritance exceptions live in `secondmate-provisioning` (load before creating/seeding/launching/recovering a secondmate).
+A single secondmate can carry its own durable model pin in its `data/secondmates.md` route, which outranks that file's model token; `secondmate-provisioning` owns the format and precedence.
 
 `config/crew-dispatch.json`, `config/crew-harness`, and `config/backlog-backend` are inherited into every secondmate home; `config/secondmate-harness` is not, because secondmates never spawn secondmates.
 Inheritance copies the literal `config/crew-harness` file, so a secondmate's own crewmates use the primary's crewmate harness only when `config/crew-harness` names a concrete adapter, such as `codex`; an unset or `default` value has nothing concrete to inherit, so the secondmate's own crewmates fall back to the secondmate's own/detected harness instead.
@@ -370,6 +371,7 @@ Every persistent secondmate has one line:
 ```
 
 The `scope:` field is used during intake; the `projects:` field is a non-exclusive clone list, not ownership.
+A line may end with an optional `; model: <model>` per-route model pin, re-applied on every secondmate spawn (`secondmate-provisioning` owns it).
 Load `secondmate-provisioning` before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited config into, or retiring a secondmate home, and before editing `data/secondmates.md`.
 That reference owns home leases, secondmate harness pins, transactional rollback, validation, project clone restrictions, handoff edge cases, charter copy rules, and teardown internals.
 
@@ -534,7 +536,7 @@ The script resolves the harness (`fm-harness.sh crew` for crewmate/scout tasks o
 A backend spawn refusal - a missing dependency, an unauthenticated socket, or a version gate - must be surfaced to the captain as a blocker; never silently retry the spawn on a different backend to work around it.
 A non-flag third argument containing whitespace is treated as a raw launch command (only for verifying new adapters).
 When `config/crew-dispatch.json` exists, the script refuses crewmate or scout launches without an explicit harness because firstmate must have already resolved the profile choice at intake.
-When `--model` or `--effort` is omitted, the corresponding meta value is `default` and no launch flag is passed for that axis, except that a `kind=secondmate` spawn can fill the omitted axis from the optional tokens in `config/secondmate-harness`.
+When `--model` or `--effort` is omitted, the corresponding meta value is `default` and no launch flag is passed for that axis, except that a `kind=secondmate` spawn can fill the omitted model from its route's `model:` pin and either omitted axis from the optional tokens in `config/secondmate-harness`.
 For `kind=secondmate`, the same script launches in the registered or explicit firstmate home instead of running `treehouse get` for a project, records `home=` and `projects=`, and uses the charter brief as the launch prompt.
 
 For ship and scout tasks, tmux/herdr/zellij/cmux create a runtime endpoint and run `treehouse get`; Orca creates an Orca-owned worktree, validates it, then creates the terminal. In all cases, the script asserts the resolved worktree is a genuine isolated worktree distinct from the primary checkout (aborting the spawn otherwise, to prevent the worktree tangle of section 8), installs the per-task turn-end signal hook, records `state/<id>.meta`, and launches the agent with the brief.

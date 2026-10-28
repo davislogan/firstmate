@@ -113,6 +113,26 @@ The classifier deliberately reports `unknown` for `node`/`python`/`python3` rath
 Practical effect: a dead `pi` secondmate is not auto-healed by the liveness sweep today; it is reported as `skipped: liveness probe inconclusive` instead, which still surfaces it for a human to act on.
 Resolving this would need either a `pi`-specific env marker inspectable from outside the process (mirroring `PI_CODING_AGENT=1`, which `bin/fm-harness.sh` already uses for self-detection but which is not readable from a different process without deeper introspection) or accepting the argument-inspection fragility - not attempted here.
 
+## Submit verification: NBSP composer and exited agents (fm-send-enter-swallow)
+
+Every `fm-send` steer in a long live session on 2026-10-27 failed with `error: text not submitted ... (Enter swallowed; text left in composer ...)` while the target agent had in fact received the message and was acting on it.
+Reproduced with real tmux 3.4 and Claude Code v2.1.312 (Linux, 2026-10-27) by sending to a live agent, both idle and mid-turn.
+The cursor row's styled capture after a successful submit was:
+
+```sh
+$ tmux capture-pane -e -p -t repro -S 46 -E 46 | cat -v
+^[[38;5;246mM-bM-^]M-/M-BM- ^[[39m
+```
+
+That is `❯` followed by a NO-BREAK SPACE (`\xc2\xa0`), which `[[:space:]]` does not trim, so `fm_tmux_composer_state` (`bin/fm-tmux-lib.sh`) read every empty Claude composer as `pending`.
+A mid-turn agent queues the message above the composer (`ctrl+x ctrl+s to send now`) and leaves the same row plus a dim `Press up to edit queued messages` hint, which ghost stripping already drops.
+The fix normalizes NBSP to a plain space before trimming; the herdr, orca, and cmux composer readers apply the same normalization.
+
+The second recorded symptom was a send that made the agent exit, such as `/exit`.
+The pane then shows a bare shell prompt, whose row always reads as `pending`.
+`bin/fm-send.sh` now probes `fm_backend_agent_alive` before and after the send and reinterprets a `pending` verdict only when the pane is confidently a bare shell afterwards.
+Verified live the same day: `/exit` returns 0 with an "exited after the text was submitted" note, a steer sent to a bare shell fails with "no agent running", a `claude --continue` relaunch typed into the bare shell returns 0, and an Enter-dropping tmux shim still fails with "still in the agent's composer after 3 Enter attempts".
+
 ## Window-index collision fix (fm-spawn-window-index-y1)
 
 Every task window is created detached (`-d`), so the session's active window never moves across a spawn.

@@ -267,6 +267,7 @@ fm_backend_orca_composer_state() {  # <terminal-id> -> empty|pending|unknown
   local terminal=$1 cap line trimmed stripped="" found=0
   cap=$(fm_backend_orca_read_text_paged "$terminal" "$FM_BACKEND_ORCA_COMPOSER_LINES") || { printf 'unknown'; return 0; }
   while IFS= read -r line; do
+    line=${line//$'\xc2\xa0'/ }  # NBSP -> space; see fm_tmux_composer_state
     trimmed="${line#"${line%%[![:space:]]*}"}"
     trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
     [ -n "$trimmed" ] || continue

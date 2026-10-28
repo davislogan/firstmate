@@ -1010,6 +1010,11 @@ test_secondmate_request_verdict_classifier() {
   write_secondmate_request "$state" lost $((now - 120)) 0
   [ "$(secondmate_request_verdict "$state/lost.meta" "$now" 60)" = overdue ] \
     || fail "an unanswered request past the timeout was not 'overdue'"
+  write_secondmate_request "$state" badcfg $((now - FM_SECONDMATE_REQUEST_TIMEOUT_DEFAULT - 1)) 0
+  [ "$(secondmate_request_verdict "$state/badcfg.meta" "$now" 20m 2>&1)" = overdue ] \
+    || fail "a non-numeric timeout did not fall back to the default"
+  [ "$(FM_SECONDMATE_REQUEST_TIMEOUT=20m secondmate_request_verdict "$state/fresh.meta" "$now" 2>&1)" = pending ] \
+    || fail "a non-numeric FM_SECONDMATE_REQUEST_TIMEOUT did not fall back to the default"
   printf 'old: line\n' > "$state/ans.status"
   write_secondmate_request "$state" ans $((now - 120)) "$(fm_fromfirst_status_bytes "$state/ans.status")"
   [ "$(secondmate_request_verdict "$state/ans.meta" "$now" 60)" = overdue ] \

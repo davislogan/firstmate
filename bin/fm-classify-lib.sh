@@ -197,6 +197,7 @@ scan_captain_relevant_statuses() {  # <state>
 # Pure read of the meta and status file.
 secondmate_request_verdict() {  # <meta> <now> [timeout]
   local meta=$1 now=$2 timeout=${3:-${FM_SECONDMATE_REQUEST_TIMEOUT:-$FM_SECONDMATE_REQUEST_TIMEOUT_DEFAULT}} ts bytes cur
+  case "$timeout" in ''|*[!0-9]*) timeout=$FM_SECONDMATE_REQUEST_TIMEOUT_DEFAULT ;; esac
   grep -q '^kind=secondmate$' "$meta" 2>/dev/null || { printf 'none'; return 0; }
   ts=$(fm_fromfirst_meta_field "$meta" fm_request_ts)
   case "$ts" in ''|*[!0-9]*) printf 'none'; return 0 ;; esac

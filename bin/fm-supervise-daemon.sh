@@ -95,8 +95,9 @@
 #                                   bare prompt glyphs plus busy footers)
 #          FM_MAX_DEFER_SECS        max seconds a buffered escalation may sit
 #                                   undelivered before one normal flush attempt;
-#                                   if that cannot confirm a submit, a wedge
-#                                   alarm fires (default 300; 0 disables)
+#                                   if that cannot confirm a submit, the digest
+#                                   is emailed out of band (FM_OOB_MAIL) and a
+#                                   wedge alarm fires (default 300; 0 disables)
 #          FM_OOB_MAIL              1 (default) lets the max-defer escape email
 #                                   the buffered digest to FM_MAIL_CAPTAIN when
 #                                   the pane cannot take it (needs mail mode on

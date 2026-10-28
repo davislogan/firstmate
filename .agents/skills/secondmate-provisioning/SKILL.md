@@ -26,6 +26,30 @@ Keep the always-inline routing rules in `AGENTS.md` authoritative: route by natu
 The `scope:` field is used during intake.
 The `projects:` field is a non-exclusive clone list, not ownership.
 
+### Per-route model pin
+
+A route may end with an optional `; model: <model>` field after the added date:
+
+```markdown
+- <id> - <charter summary> (home: <path>; scope: <scope>; projects: <a>, <b>; added <date>; model: <model>)
+```
+
+This section is the one owner of the per-route model contract; other docs cross-reference it.
+It exists because the model is sometimes a safety requirement, not a preference: a home whose crews would be parked by a newer model's safeguards must keep running on the model it was pinned to.
+`bin/fm-spawn.sh` re-reads the field from `data/secondmates.md` on every `--secondmate` spawn, so the pin survives recovery, restart, the bootstrap liveness sweep, and `/updatefirstmate`, none of which pass `--model`.
+Model precedence for a `--secondmate` spawn, highest first:
+
+1. An explicit per-spawn `--model`.
+2. The route's `model:` field.
+3. The model token in `config/secondmate-harness` (described below).
+4. The harness's own default.
+
+The route pin applies even when the spawn passes an explicit harness, because it belongs to the home rather than to the launch path; a raw launch command carries no model placeholder, so no pin can apply to it.
+It never affects crewmate or scout model resolution.
+Do not pin `default`: an account-level setting can make a harness's default model change under you, so `default` is not a pin and the helper refuses it.
+Set, read, or clear a pin with `bin/fm-home-seed.sh model <id> [<model>|-]`; seeding with `FM_SECONDMATE_MODEL=<model>` sets it at creation, and re-seeding an existing id keeps its pin unless that variable is set.
+`bin/fm-home-seed.sh validate` refuses a malformed `model:` token.
+
 ## Charter and seed
 
 Scaffold a secondmate charter with:
@@ -61,6 +85,7 @@ A bare `<harness>` (today's format, e.g. `claude`) behaves exactly as before - h
 For a `--secondmate` spawn, `bin/fm-spawn.sh` populates `MODEL`/`EFFORT` from those tokens only when the harness itself came from the secondmate config path for that spawn.
 An explicit per-spawn `--harness` flag, positional harness arg, or raw launch command starts clean on model and effort too, unless the caller also passes explicit `--model` or `--effort`.
 When the file's tokens do apply, an explicit per-spawn `--model` or `--effort` flag always wins over the file's token for that axis.
+A route's own `model:` pin also outranks the file's model token; see "Per-route model pin" above.
 Because this resolves from the file on every spawn, the pin is durable across every respawn (recovery, `/updatefirstmate`, restart) exactly like the harness axis itself - e.g. `config/secondmate-harness` containing `claude opus` keeps a secondmate pinned to Opus even if the primary's own default model later changes.
 This is secondmate-only: crewmate/scout model resolution is untouched by this file.
 

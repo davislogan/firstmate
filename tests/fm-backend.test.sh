@@ -755,6 +755,7 @@ exit 0
 SH
   chmod +x "$fb/tmux"
   fm_fake_exit0 "$fb" treehouse
+  fm_fake_harnesses "$fb"
   printf '%s\n' "$fb"
 }
 
@@ -795,18 +796,24 @@ test_spawn_conformance_old_vs_new() {
   assert_contains "$out_new" "spawned $id harness=claude kind=ship mode=no-mistakes yolo=off window=firstmate:fm-$id worktree=$wt" \
     "spawn output missing the expected summary line"
 
-  diff -u "$log_old" "$log_new" > "$TMP_ROOT/spawn-diff.txt" 2>&1 \
+  # The one intended difference: the new launch names the harness by the
+  # absolute path resolved at spawn, so a profile-less pane cannot hit
+  # "command not found". Assert it, then normalize it away for the byte diff.
+  assert_contains "$(cat "$log_new")" "=false $fb/claude --dangerously-skip-permissions" \
+    "spawn launch did not resolve the harness binary to its absolute path"
+  sed "s#=false $fb/claude #=false claude #" "$log_new" > "$log_new.norm"
+  diff -u "$log_old" "$log_new.norm" > "$TMP_ROOT/spawn-diff.txt" 2>&1 \
     || fail "fm-spawn.sh: tmux command log differs old vs new"$'\n'"$(cat "$TMP_ROOT/spawn-diff.txt")"
 
   # Sanity: the log actually captured the session/window lifecycle so an
   # accidentally-empty log (e.g. a fake tmux path typo) cannot pass silently.
   assert_contains "$(cat "$log_new")" $'\x1f''new-window' "spawn tmux log missing new-window"
   assert_contains "$(cat "$log_new")" $'\x1f''treehouse get' "spawn tmux log missing the treehouse get send"
-  assert_contains "$(cat "$log_new")" $'\x1f''-l'$'\x1f'"CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions \"\$(cat '$data/$id/brief.md')\"" \
+  assert_contains "$(cat "$log_new")" $'\x1f''-l'$'\x1f'"CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false $fb/claude --dangerously-skip-permissions \"\$(cat '$data/$id/brief.md')\"" \
     "spawn tmux log missing the literal launch-command send"
 
   rm -rf "/tmp/fm-$id"
-  pass "fm-spawn.sh: tmux command log and printed summary line are byte-identical old vs new for a ship-task claude spawn"
+  pass "fm-spawn.sh: tmux command log and printed summary line are byte-identical old vs new (modulo the resolved harness path) for a ship-task claude spawn"
 }
 
 # --- symlinked project prefix must not false-refuse the isolation guard -----
@@ -849,6 +856,7 @@ exit 0
 SH
   chmod +x "$fb/tmux"
   fm_fake_exit0 "$fb" treehouse
+  fm_fake_harnesses "$fb"
   printf '%s\n' "$fb"
 }
 

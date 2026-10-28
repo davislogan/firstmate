@@ -100,6 +100,7 @@ tests/fm-update.test.sh                   # fast-forward-only self-update, rerea
 tests/fm-secondmate-sync.test.sh          # local-HEAD secondmate sync, no-fetch, bootstrap nudge gating, stable nudge selectors after respawn, and spawn hook tests
 tests/fm-secondmate-liveness.test.sh      # session-start secondmate agent-liveness probe and respawn sweep tests
 tests/fm-secondmate-harness.test.sh       # secondmate-vs-crewmate harness resolution, optional secondmate model/effort pins, primary-to-secondmate config inheritance, and config-push tests
+tests/fm-secondmate-model-pin.test.sh     # per-route secondmate model pin precedence, bootstrap-respawn durability, crewmate isolation, registry pin writer, and absolute harness-binary resolution tests
 tests/fm-secondmate-lifecycle-e2e.test.sh # persistent secondmate routing, seeding, backlog handoff, spawn, recovery, teardown, and FM_HOME flow tests
 tests/fm-secondmate-safety.test.sh        # secondmate home safety, idle charter, handoff validation, teardown boundary, and child-cleanup fail-closed tests
 tests/fm-teardown.test.sh                 # fm-teardown.sh landed-work safety and reminder checks: fork-remote allow, squash/content landings, dirty and unlanded refusals, PR-head metadata, no-pr= branch discovery, tasks-axi/manual backlog reminder, --force override, stale-vs-live worktree git index.lock recovery

@@ -32,9 +32,16 @@
 #       when no filled charter brief exists. Set FM_SECONDMATE_SCOPE='<scope>'
 #       to override the registry routing scope. Otherwise the registry summary
 #       and scope are derived from the filled charter brief.
+#       Set FM_SECONDMATE_MODEL='<model>' to write a per-route model pin;
+#       re-seeding an existing id keeps its current pin unless this is set.
+#   fm-home-seed.sh model <id> [<model>|-]
+#       Print, set, or (with "-") clear the per-route model pin of a registered
+#       secondmate. "default" is refused because it is not a pin. The pin takes
+#       effect on the secondmate's next spawn or respawn. Format and precedence
+#       are owned by the secondmate-provisioning skill ("Per-route model pin").
 #   fm-home-seed.sh validate
-#       Refuse duplicate ids, duplicate homes, and nested or overlapping homes in
-#       data/secondmates.md.
+#       Refuse duplicate ids, duplicate homes, nested or overlapping homes, and
+#       malformed per-route model pins in data/secondmates.md.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -47,11 +54,29 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 
 usage() {
   echo "usage: fm-home-seed.sh <id> <home|-> <project>..." >&2
+  echo "       fm-home-seed.sh model <id> [<model>|-]" >&2
   echo "       fm-home-seed.sh validate" >&2
 }
 
 registry_home_for_line() {
   sed -n 's/^[^(]*(home: \([^;)]*\);.*/\1/p'
+}
+
+# Per-route model pin: an optional "; model: <model>" field after the added date.
+registry_model_for_line() {
+  sed -n 's/^.*; added [^;)]*; model: \([^;)[:space:]]*\)[[:space:]]*[;)].*/\1/p'
+}
+
+# Drop any model field so a line can be rewritten with exactly one.
+registry_line_without_model() {
+  sed 's/; model: [^;)]*\([;)]\)/\1/'
+}
+
+# A model pin is one shell-safe token and never "default" (not a pin).
+valid_model_pin() {
+  case "$1" in
+    ''|default|-*|*[!A-Za-z0-9._:/@+=\[\]-]*) return 1 ;;
+  esac
 }
 
 normalize_registry_text() {
@@ -231,7 +256,7 @@ registry_id_conflict_for_assignment() {
 }
 
 validate_registry() {
-  local tmp line id registered_home home_key duplicate_homes duplicate_ids overlaps
+  local tmp line id registered_home home_key duplicate_homes duplicate_ids overlaps model_pin bad_models=
   tmp=$(mktemp "${TMPDIR:-/tmp}/fm-firstmates.XXXXXX")
   if [ -f "$REG" ]; then
     while IFS= read -r line; do
@@ -239,6 +264,12 @@ validate_registry() {
         "- "*)
           id=${line#- }
           id=${id%% *}
+          case "$line" in
+            *"; model:"*)
+              model_pin=$(printf '%s\n' "$line" | registry_model_for_line)
+              valid_model_pin "$model_pin" || bad_models="${bad_models}${bad_models:+, }$id"
+              ;;
+          esac
           registered_home=$(printf '%s\n' "$line" | registry_home_for_line)
           [ -n "$registered_home" ] || continue
           home_key=$(resolved_path "$registered_home")
@@ -300,6 +331,10 @@ validate_registry() {
     return 1
   }
   rm -f "$tmp"
+  if [ -n "$bad_models" ]; then
+    printf 'error: malformed per-route model pin for: %s (expected "; model: <model>" after the added date; "default" is not a pin)\n' "$bad_models" >&2
+    return 1
+  fi
   return 0
 }
 
@@ -848,19 +883,62 @@ initialize_no_mistakes_project() {
 }
 
 write_registry() {
-  local id=$1 home=$2 projects_csv=$3 brief=$4 scope summary tmp today
+  local id=$1 home=$2 projects_csv=$3 brief=$4 scope summary tmp today model model_field=
   mkdir -p "$DATA"
   scope=$(registry_scope_for_brief "$brief")
   summary=$(registry_summary_for_brief "$brief")
   today=$(date +%F)
+  # A re-seed keeps the existing per-route model pin unless FM_SECONDMATE_MODEL
+  # names a new one, so re-provisioning never silently drops a safety pin.
+  model=${FM_SECONDMATE_MODEL:-}
+  if [ -z "$model" ] && [ -f "$REG" ]; then
+    model=$(grep -E "^- $id( |$)" "$REG" | tail -1 | registry_model_for_line || true)
+  fi
+  [ -z "$model" ] || model_field="; model: $model"
   tmp="$REG.tmp.$$"
   if [ -f "$REG" ]; then
     grep -vE "^- $id( |$)" "$REG" > "$tmp" || true
   else
     : > "$tmp"
   fi
-  printf -- '- %s - %s (home: %s; scope: %s; projects: %s; added %s)\n' "$id" "$summary" "$home" "$scope" "$projects_csv" "$today" >> "$tmp"
+  printf -- '- %s - %s (home: %s; scope: %s; projects: %s; added %s%s)\n' "$id" "$summary" "$home" "$scope" "$projects_csv" "$today" "$model_field" >> "$tmp"
   mv "$tmp" "$REG"
+}
+
+# fm-home-seed.sh model <id> [<model>|-]: print, set, or clear a route's pin.
+# Edits only the model field of the one matching line; every other line and
+# field stays byte-identical.
+route_model() {
+  local id=$1 value=${2-} line new tmp
+  [ -f "$REG" ] || { echo "error: no secondmate registry at $REG" >&2; return 1; }
+  line=$(grep -E "^- $id( |$)" "$REG" | tail -1 || true)
+  [ -n "$line" ] || { echo "error: no registered secondmate '$id' in $REG" >&2; return 1; }
+  if [ $# -lt 2 ]; then
+    printf '%s\n' "$line" | registry_model_for_line
+    return 0
+  fi
+  if [ "$value" != - ] && ! valid_model_pin "$value"; then
+    echo "error: invalid model pin '$value' (one token of letters, digits, and ._:/@+=[]-; 'default' is not a pin - use '-' to clear)" >&2
+    return 1
+  fi
+  new=$(printf '%s\n' "$line" | registry_line_without_model)
+  case "$new" in
+    *"; added "*")") : ;;
+    *) echo "error: route for '$id' does not end with '; added <date>)'; fix the line by hand before pinning" >&2; return 1 ;;
+  esac
+  [ "$value" = - ] || new="${new%)}; model: $value)"
+  tmp="$REG.tmp.$$"
+  if awk -v id="$id" -v new="$new" '
+    BEGIN { prefix = "- " id }
+    (index($0, prefix " ") == 1 || $0 == prefix) { print new; next }
+    { print }
+  ' "$REG" > "$tmp"; then
+    mv "$tmp" "$REG"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+  validate_registry
 }
 
 seed_home() {
@@ -986,12 +1064,21 @@ case "${1:-}" in
     [ $# -eq 1 ] || { usage; exit 1; }
     validate_registry
     ;;
+  model)
+    [ $# -eq 2 ] || [ $# -eq 3 ] || { usage; exit 1; }
+    shift
+    route_model "$@"
+    ;;
   -h|--help|'')
     usage
     exit 0
     ;;
   *)
     [ $# -ge 3 ] || { usage; exit 1; }
+    if [ -n "${FM_SECONDMATE_MODEL:-}" ] && ! valid_model_pin "$FM_SECONDMATE_MODEL"; then
+      echo "error: invalid FM_SECONDMATE_MODEL '$FM_SECONDMATE_MODEL' (one token; 'default' is not a pin)" >&2
+      exit 1
+    fi
     seed_home "$@"
     ;;
 esac

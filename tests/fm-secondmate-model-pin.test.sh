@@ -378,6 +378,22 @@ test_registry_model_subcommand() {
 # Re-seeding an existing route keeps its pin, and FM_SECONDMATE_MODEL sets one.
 # write_registry is exercised in isolation by sourcing its definitions, because
 # a full seed needs real project clones that the safety suite already covers.
+# run_write_registry <reg> <data> <id> <home> <brief> [VAR=value...]: call the
+# real write_registry with only fm-home-seed.sh's definitions loaded.
+run_write_registry() {
+  local reg=$1 data=$2 id=$3 home=$4 brief=$5
+  shift 5
+  (
+    # shellcheck disable=SC2163  # the args are VAR=value pairs
+    [ $# -eq 0 ] || export "$@"
+    # shellcheck disable=SC1090  # load only the function definitions, not the dispatcher
+    . <(sed -e '/^case "\${1:-}" in$/,$d' -e "s|^SCRIPT_DIR=.*|SCRIPT_DIR='$ROOT/bin'|" "$ROOT/bin/fm-home-seed.sh")
+    # shellcheck disable=SC2034  # read by the sourced write_registry
+    REG=$reg DATA=$data
+    write_registry "$id" "$home" alpha "$brief"
+  )
+}
+
 test_write_registry_preserves_pin() {
   local w data reg brief out
   w=$(new_world write-registry)
@@ -385,27 +401,55 @@ test_write_registry_preserves_pin() {
   brief="$w/brief.md"
   printf '# Task\nGuard the bench.\n' > "$brief"
   add_route "$w" biochem "$w/biochem" claude-opus-5
-  (
-    # shellcheck disable=SC1090  # load only the function definitions, not the dispatcher
-    . <(sed '/^case "\${1:-}" in$/,$d' "$ROOT/bin/fm-home-seed.sh")
-    # shellcheck disable=SC2034  # read by the sourced write_registry
-    REG=$reg DATA=$data
-    write_registry biochem "$w/biochem" alpha "$brief"
-  ) || fail "write_registry failed"
+  run_write_registry "$reg" "$data" biochem "$w/biochem" "$brief" || fail "write_registry failed"
   [ "$(grep -c '^- biochem ' "$reg")" = 1 ] || fail "re-seed duplicated the route"
   assert_grep "; model: claude-opus-5)" "$reg" "re-seed dropped the existing pin"
-  (
-    # shellcheck disable=SC1090
-    . <(sed '/^case "\${1:-}" in$/,$d' "$ROOT/bin/fm-home-seed.sh")
-    # shellcheck disable=SC2034  # read by the sourced write_registry
-    REG=$reg DATA=$data FM_SECONDMATE_MODEL=claude-opus-5-5
-    write_registry biochem "$w/biochem" alpha "$brief"
-  ) || fail "write_registry with FM_SECONDMATE_MODEL failed"
+  run_write_registry "$reg" "$data" biochem "$w/biochem" "$brief" FM_SECONDMATE_MODEL=claude-opus-5-5 \
+    || fail "write_registry with FM_SECONDMATE_MODEL failed"
   assert_grep "; model: claude-opus-5-5)" "$reg" "FM_SECONDMATE_MODEL did not set the pin"
   [ "$(grep -c 'model:' "$reg")" = 1 ] || fail "FM_SECONDMATE_MODEL should leave exactly one model field"
   out=$(FM_SECONDMATE_MODEL=default seed "$data" x - alpha 2>&1) && fail "seeding with FM_SECONDMATE_MODEL=default must fail"
   assert_contains "$out" "invalid FM_SECONDMATE_MODEL" "seed gave no reason for a bad FM_SECONDMATE_MODEL"
-  pass "S re-seeding keeps an existing pin, FM_SECONDMATE_MODEL sets one, and a bad value is refused before seeding"
+
+  # A malformed (intended) pin is never silently dropped by a re-seed.
+  printf -- '- biochem - biochem charter (home: %s; scope: biochem work; projects: alpha; added 2026-01-01; model:claude-opus-5)\n' \
+    "$w/biochem" > "$reg"
+  cp "$reg" "$w/malformed"
+  out=$(run_write_registry "$reg" "$data" biochem "$w/biochem" "$brief" 2>&1) && fail "re-seed over a malformed pin must fail"
+  assert_contains "$out" "bin/fm-home-seed.sh model biochem <model>" "malformed re-seed did not point at the fix"$'\n'"$out"
+  cmp -s "$w/malformed" "$reg" || fail "a refused re-seed must leave the registry untouched"
+  out=$(seed "$data" biochem - alpha 2>&1) && fail "the seed command must refuse a re-seed over a malformed pin"
+  assert_contains "$out" "malformed model pin" "seed command gave no malformed-pin reason"$'\n'"$out"
+  cmp -s "$w/malformed" "$reg" || fail "a refused seed command must leave the registry untouched"
+  run_write_registry "$reg" "$data" biochem "$w/biochem" "$brief" FM_SECONDMATE_MODEL=claude-opus-5 \
+    || fail "FM_SECONDMATE_MODEL should replace a malformed pin on re-seed"
+  assert_grep "; model: claude-opus-5)" "$reg" "FM_SECONDMATE_MODEL did not replace the malformed pin"
+  seed "$data" validate || fail "the replaced pin should validate"
+  pass "S re-seeding keeps an existing pin, refuses to drop a malformed one, FM_SECONDMATE_MODEL sets or replaces one, and a bad value is refused"
+}
+
+# Trailing whitespace or a CRLF line ending after the closing paren is not part
+# of the pin field: a pinless route stays pinless and a pinned route keeps its pin.
+test_trailing_whitespace_and_crlf() {
+  local suffix exp n w sm launchlog out status meta
+  n=0
+  for suffix in ') ^default' $')\r^default' $'; model: claude-opus-5) \r^claude-opus-5'; do
+    n=$((n + 1))
+    exp=${suffix#*^}; suffix=${suffix%^*}
+    w=$(new_world "trailing-$n")
+    sm="$w/sm"
+    make_seeded_home "$sm" sm
+    printf -- '- sm - sm charter (home: %s; scope: sm work; projects: alpha; added 2026-01-01%s\n' \
+      "$sm" "$suffix" > "$w/home/data/secondmates.md"
+    launchlog="$w/launch.log"
+    out=$(spawn_sm "$w" sm "$launchlog" 2>&1); status=$?
+    expect_code 0 "$status" "trailing-$n: spawn should succeed"$'\n'"$out"
+    meta="$w/home/state/sm.meta"
+    [ "$(meta_field "$meta" model)" = "$exp" ] \
+      || fail "trailing-$n: meta model '$(meta_field "$meta" model)', expected '$exp'"
+    seed "$w/home/data" validate || fail "trailing-$n: route should validate"
+  done
+  pass "P trailing whitespace and CRLF after the route are ignored by the pin parser"
 }
 
 # ===========================================================================
@@ -461,5 +505,6 @@ test_bootstrap_respawn_keeps_route_pin
 test_crew_and_scout_ignore_route_pin
 test_registry_model_subcommand
 test_write_registry_preserves_pin
+test_trailing_whitespace_and_crlf
 test_harness_binary_resolution
 echo "# all fm-secondmate-model-pin tests passed"

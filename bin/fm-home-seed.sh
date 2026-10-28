@@ -45,6 +45,8 @@
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-secondmate-route-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-route-lib.sh"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
@@ -62,46 +64,31 @@ registry_home_for_line() {
   sed -n 's/^[^(]*(home: \([^;)]*\);.*/\1/p'
 }
 
-# Per-route model pin: an optional "; model: <model>" field after the added date.
-# Only the structured tail after the last "; added <date>" is inspected, so a
-# "model:" in the charter summary or scope prose is never mistaken for a pin.
-# Prints "none", "pin <token>", or "malformed".
-registry_pin_state() {
-  local tail tok
-  tail=$(sed -n 's/^.*; added [^;)[:space:]]*//p')
-  case "$tail" in
-    ''|')') echo none ;;
-    '; model: '*')')
-      tok=${tail#; model: }
-      tok=${tok%)}
-      case "$tok" in
-        ''|*[\;\)[:space:]]*) echo malformed ;;
-        *) printf 'pin %s\n' "$tok" ;;
-      esac
-      ;;
-    *) echo malformed ;;
-  esac
-}
-
+# Per-route model pin grammar (fm-secondmate-route-lib.sh); stdin is one route line.
 registry_model_for_line() {
   local state
-  state=$(registry_pin_state)
+  state=$(fm_route_pin_state "$(cat)")
   case "$state" in
     "pin "*) printf '%s\n' "${state#pin }" ;;
   esac
+}
+
+# A re-seed must never silently drop a malformed (intended) pin.
+registry_reseed_pin_check() {
+  local id=$1 line
+  [ -z "${FM_SECONDMATE_MODEL:-}" ] || return 0
+  [ -f "$REG" ] || return 0
+  line=$(grep -E "^- $id( |$)" "$REG" | tail -1 || true)
+  [ -n "$line" ] || return 0
+  [ "$(fm_route_pin_state "$line")" = malformed ] || return 0
+  echo "error: existing route for '$id' has a malformed model pin; re-seeding would drop it. Fix it with 'bin/fm-home-seed.sh model $id <model>' (or '-' to clear), or set FM_SECONDMATE_MODEL" >&2
+  return 1
 }
 
 # Rebuild the structured tail with no model field so a line can be rewritten
 # with exactly one, replacing a malformed tail too.
 registry_line_without_model() {
   sed 's/^\(.*; added [^;)[:space:]]*\).*$/\1)/'
-}
-
-# A model pin is one shell-safe token and never "default" (not a pin).
-valid_model_pin() {
-  case "$1" in
-    ''|default|-*|*[!A-Za-z0-9._:/@+=\[\]-]*) return 1 ;;
-  esac
 }
 
 normalize_registry_text() {
@@ -289,10 +276,10 @@ validate_registry() {
         "- "*)
           id=${line#- }
           id=${id%% *}
-          model_pin=$(printf '%s\n' "$line" | registry_pin_state)
+          model_pin=$(fm_route_pin_state "$line")
           case "$model_pin" in
             none) ;;
-            "pin "*) valid_model_pin "${model_pin#pin }" || bad_models="${bad_models}${bad_models:+, }$id" ;;
+            "pin "*) fm_route_valid_model_pin "${model_pin#pin }" || bad_models="${bad_models}${bad_models:+, }$id" ;;
             *) bad_models="${bad_models}${bad_models:+, }$id" ;;
           esac
           registered_home=$(printf '%s\n' "$line" | registry_home_for_line)
@@ -915,6 +902,7 @@ write_registry() {
   today=$(date +%F)
   # A re-seed keeps the existing per-route model pin unless FM_SECONDMATE_MODEL
   # names a new one, so re-provisioning never silently drops a safety pin.
+  registry_reseed_pin_check "$id" || return 1
   model=${FM_SECONDMATE_MODEL:-}
   if [ -z "$model" ] && [ -f "$REG" ]; then
     model=$(grep -E "^- $id( |$)" "$REG" | tail -1 | registry_model_for_line || true)
@@ -942,7 +930,7 @@ route_model() {
     printf '%s\n' "$line" | registry_model_for_line
     return 0
   fi
-  if [ "$value" != - ] && ! valid_model_pin "$value"; then
+  if [ "$value" != - ] && ! fm_route_valid_model_pin "$value"; then
     echo "error: invalid model pin '$value' (one token of letters, digits, and ._:/@+=[]-; 'default' is not a pin - use '-' to clear)" >&2
     return 1
   fi
@@ -1099,10 +1087,11 @@ case "${1:-}" in
     ;;
   *)
     [ $# -ge 3 ] || { usage; exit 1; }
-    if [ -n "${FM_SECONDMATE_MODEL:-}" ] && ! valid_model_pin "$FM_SECONDMATE_MODEL"; then
+    if [ -n "${FM_SECONDMATE_MODEL:-}" ] && ! fm_route_valid_model_pin "$FM_SECONDMATE_MODEL"; then
       echo "error: invalid FM_SECONDMATE_MODEL '$FM_SECONDMATE_MODEL' (one token; 'default' is not a pin)" >&2
       exit 1
     fi
+    registry_reseed_pin_check "$1" || exit 1
     seed_home "$@"
     ;;
 esac

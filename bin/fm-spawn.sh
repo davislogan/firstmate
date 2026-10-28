@@ -113,6 +113,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-secondmate-route-lib.sh
+. "$SCRIPT_DIR/fm-secondmate-route-lib.sh"
 # Skip the watcher guard when re-exec'd for one pair of a batch (FM_SPAWN_NO_GUARD is
 # set by the batch loop below), so the guard runs once for the batch, not once per pair.
 [ -n "${FM_SPAWN_NO_GUARD:-}" ] || "$FM_ROOT/bin/fm-guard.sh" || true
@@ -420,26 +422,6 @@ secondmate_registry_line() {
   grep -E "^- $id( |$)" "$reg" | tail -1 || true
 }
 
-# Classify a route's per-route model pin from the structured tail after the last
-# "; added <date>" only, so "model:" in charter or scope prose is ignored.
-# Prints "none", "pin <token>", or "malformed".
-secondmate_route_pin_state() {
-  local tail tok
-  tail=$(printf '%s\n' "$1" | sed -n 's/^.*; added [^;)[:space:]]*//p')
-  case "$tail" in
-    ''|')') echo none ;;
-    '; model: '*')')
-      tok=${tail#; model: }
-      tok=${tok%)}
-      case "$tok" in
-        ''|-*|*[!A-Za-z0-9._:/@+=\[\]-]*) echo malformed ;;
-        *) printf 'pin %s\n' "$tok" ;;
-      esac
-      ;;
-    *) echo malformed ;;
-  esac
-}
-
 secondmate_registry_value() {
   local id=$1 key=$2 line value
   line=$(secondmate_registry_line "$id") || return 1
@@ -464,7 +446,7 @@ secondmate_registry_value() {
 # spawns never read it.
 if [ "$KIND" = secondmate ] && [ "$MODEL_SET" -eq 0 ] && [ "$RAW_LAUNCH" -eq 0 ]; then
   ROUTE_LINE=$(secondmate_registry_line "$ID" || true)
-  ROUTE_PIN=$(secondmate_route_pin_state "$ROUTE_LINE")
+  ROUTE_PIN=$(fm_route_pin_state "$ROUTE_LINE")
   case "$ROUTE_PIN" in
     none) ;;
     "pin default") echo "warning: data/secondmates.md route for $ID pins model 'default', which is not a pin; ignoring" >&2 ;;

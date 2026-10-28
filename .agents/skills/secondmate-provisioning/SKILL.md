@@ -48,9 +48,11 @@ The route pin applies even when the spawn passes an explicit harness, because it
 It never affects crewmate or scout model resolution.
 Do not pin `default`: an account-level setting can make a harness's default model change under you, so `default` is not a pin and the helper refuses it.
 Set, read, or clear a pin with `bin/fm-home-seed.sh model <id> [<model>|-]`; seeding with `FM_SECONDMATE_MODEL=<model>` sets it at creation, and re-seeding an existing id keeps its pin unless that variable is set.
+Re-seeding an id whose existing pin is malformed is refused unless `FM_SECONDMATE_MODEL` is set, so a re-seed never silently drops an intended pin.
 `bin/fm-home-seed.sh validate` refuses a malformed `model:` token.
 Only the text after the last `; added <date>` is the pin field, so a `model:` in the charter summary or scope prose is ignored.
-That tail must be exactly `)` (no pin) or `; model: <model>)`.
+After trailing whitespace and CR are stripped, that tail must be exactly `)` (no pin) or `; model: <model>)`.
+The grammar is implemented once in `bin/fm-secondmate-route-lib.sh`, shared by `fm-spawn.sh` and `fm-home-seed.sh`.
 A `--secondmate` spawn fails closed on any other tail, such as `model:<model>` with no space or a multi-word value.
 It prints the route and the `bin/fm-home-seed.sh model <id> <model>` fix and exits before creating any endpoint, so an unattended respawn reports `respawn failed` instead of relaunching on the wrong model.
 An explicit `model: default` is still only warned about and ignored.

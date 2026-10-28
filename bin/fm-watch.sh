@@ -44,6 +44,11 @@
 #                          spinner) - only a genuinely new captain-relevant line
 #                          re-arms it. Unless afk is active.
 #   check: <script>: <out> per-task check output, always actionable
+#   check: secondmate-request: <id>: ...
+#                          a marked request fm-send delivered to a secondmate got
+#                          no status answer within FM_SECONDMATE_REQUEST_TIMEOUT
+#                          (default 1200s); surfaced once, then cleared. Answered
+#                          and no-request secondmates never wake (fm-classify-lib.sh)
 #   heartbeat              fleet-scan backstop found an unsurfaced captain-relevant
 #                          status, unless afk is active
 # For normal supervision, resume the session-start primary-harness protocol
@@ -596,6 +601,24 @@ while :; do
     done
     touch "$STATE/.last-check"
   fi
+
+  # Outstanding from-firstmate requests to secondmates. A secondmate pane is
+  # exempt from stale detection below, so a request whose turn died would vanish;
+  # the shared classifier judges each recorded request instead (contract in
+  # bin/fm-marker-lib.sh). Answered -> clear silently. Overdue -> enqueue, clear,
+  # wake: exactly one wake per lost request. Cheap meta/status reads every poll.
+  while IFS=$(printf '\t') read -r rmeta rtask rverdict rage rts rsummary; do
+    [ -n "$rmeta" ] || continue
+    if [ "$rverdict" = answered ]; then
+      fm_fromfirst_request_clear "$rmeta" "$rts" || true
+      triage_log "secondmate $rtask answered firstmate request on the status path"
+      continue
+    fi
+    reason="check: secondmate-request: $rtask: no status answer to firstmate request sent ${rage}s ago; its turn may have died: $rsummary"
+    fm_wake_append check "secondmate-request:$rtask" "$reason" || exit 1
+    fm_fromfirst_request_clear "$rmeta" "$rts" || triage_log "could not clear surfaced request in $rmeta"
+    wake "$reason"
+  done < <(scan_secondmate_requests "$STATE" "$(date +%s)")
 
   # On the first changed signal, linger one grace period and re-scan before
   # classifying: a crewmate's final status write and the same turn's turn-end

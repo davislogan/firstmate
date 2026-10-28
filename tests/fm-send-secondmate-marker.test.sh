@@ -189,9 +189,59 @@ test_marker_is_label_plus_unit_separator() {
   pass "fm-send: the marker is exactly '[fm-from-firstmate]' + ASCII 0x1f, detector keys on it"
 }
 
+# A delivered marked request is recorded in the secondmate's meta so the watcher
+# can surface it if no status answer arrives (bin/fm-marker-lib.sh). The status
+# size is captured before the send; a second send while the first is unanswered
+# keeps the older timestamp; a crewmate send records nothing.
+test_secondmate_request_is_recorded() {
+  local dir fb log home meta rc ts1
+  dir="$TMP_ROOT/sm-record"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home sm-record); meta="$home/state/domain.meta"
+  fm_write_secondmate_meta "$meta" "$home" "sess:fm-domain"
+  printf 'done: earlier answer\n' > "$home/state/domain.status"
+  run_send "$fb" "$home" "$log" "domain" "audit the build"; rc=$?
+  expect_code 0 "$rc" "send to a secondmate target should succeed"
+  ts1=$(fm_fromfirst_meta_field "$meta" fm_request_ts)
+  [ -n "$ts1" ] || fail "marked send did not record fm_request_ts"
+  [ "$(fm_fromfirst_meta_field "$meta" fm_request_status_bytes)" = "$(fm_fromfirst_status_bytes "$home/state/domain.status")" ] \
+    || fail "recorded status size does not match the pre-send status file"
+  [ "$(fm_fromfirst_meta_field "$meta" fm_request)" = "audit the build" ] || fail "request summary not recorded"
+  grep -q '^kind=secondmate$' "$meta" || fail "recording the request damaged the rest of the meta"
+  # Rewind the first request so a newer send is distinguishable.
+  fm_fromfirst_request_clear "$meta" || fail "could not clear the recorded request"
+  fm_fromfirst_request_record "$meta" 1000 "$(fm_fromfirst_status_bytes "$home/state/domain.status")" "audit the build" \
+    || fail "could not re-record the request"
+  run_send "$fb" "$home" "$log" "domain" "and the docs"; rc=$?
+  expect_code 0 "$rc" "second send should succeed"
+  [ "$(fm_fromfirst_meta_field "$meta" fm_request_ts)" = 1000 ] \
+    || fail "a newer send overwrote an older unanswered request"
+  printf 'working: on it\n' >> "$home/state/domain.status"
+  run_send "$fb" "$home" "$log" "domain" "one more thing"; rc=$?
+  expect_code 0 "$rc" "third send should succeed"
+  [ "$(fm_fromfirst_meta_field "$meta" fm_request_ts)" != 1000 ] \
+    || fail "an answered request was not replaced by the newer send"
+  [ "$(fm_fromfirst_meta_field "$meta" fm_request)" = "one more thing" ] || fail "newer request summary not recorded"
+  pass "fm-send: a marked request is recorded in meta; an older unanswered one keeps its timestamp"
+}
+
+test_crewmate_send_records_no_request() {
+  local dir fb log home rc
+  dir="$TMP_ROOT/crew-record"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home crew-record)
+  fm_write_meta "$home/state/build.meta" "window=sess:fm-build" "kind=ship" "harness=claude"
+  run_send "$fb" "$home" "$log" "fm-build" "rebase please"; rc=$?
+  expect_code 0 "$rc" "send to a crewmate should succeed"
+  grep -q '^fm_request' "$home/state/build.meta" && fail "a crewmate send recorded an outstanding request"
+  pass "fm-send: an unmarked crewmate send records no outstanding request"
+}
+
 test_secondmate_target_is_marked
 test_exact_secondmate_task_id_is_marked
 test_crewmate_target_is_not_marked
 test_explicit_window_is_not_marked
 test_key_path_is_not_marked
 test_marker_is_label_plus_unit_separator
+test_secondmate_request_is_recorded
+test_crewmate_send_records_no_request

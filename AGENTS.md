@@ -483,6 +483,7 @@ The stable `fm-<id>` label printed by lifecycle commands still works, but exact 
 A secondmate is itself a firstmate, so a request reaches it in its own chat, which you never read - the return channel that wakes you is its status file.
 So `fm-send` to a task selector whose meta is `kind=secondmate` automatically prepends a from-firstmate marker (`bin/fm-marker-lib.sh`); the secondmate recognizes it and returns its answer via its status file, or via a doc under its home plus a status pointer for a detailed response, never only in chat.
 Expect and read that response on the status/doc path the same way you read any other status signal; do not peek the secondmate's chat for the answer.
+A request that gets no status answer surfaces by timeout (section 8).
 A captain typing directly into the secondmate's window is unmarked and stays a conversational captain intervention, so do not relay captain-destined chat through this path; the marker is applied only by `fm-send` to a `kind=secondmate` target.
 Do not spawn a direct crewmate for work that belongs to a secondmate scope unless the secondmate is blocked or the captain explicitly redirects it.
 If no secondmate scope fits, proceed in the main firstmate or create a new secondmate with the captain when that domain should become persistent.
@@ -740,6 +741,8 @@ Each task's backend live-task inventory is the ground truth (tmux when `backend=
 For `kind=secondmate`, an idle pane is healthy.
 A secondmate may be sitting on its own watcher with no visible pane changes, so parent supervision uses status writes plus heartbeat review, not pane-staleness.
 `fm-watch.sh` therefore skips stale-pane wakes for windows whose meta records `kind=secondmate`.
+The gap this leaves - a secondmate whose turn dies while holding a marked request - is closed by timeout instead: `fm-send` records each delivered marked request in the secondmate's meta, a status line from it clears the record, and an unanswered one surfaces exactly once as a `check: secondmate-request: <id>: ...` wake after `FM_SECONDMATE_REQUEST_TIMEOUT` seconds (default 1200; contract in `bin/fm-marker-lib.sh`).
+On that wake, peek the secondmate and load `stuck-crewmate-recovery` before re-sending the request.
 This exception is narrow: ordinary crewmates still trip stale detection when their pane stops changing without a busy signature.
 
 **Watcher liveness is guarded, not just disciplined.**

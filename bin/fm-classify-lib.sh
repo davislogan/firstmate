@@ -20,6 +20,10 @@
 # it is still working. Callers run it ONLY on no-verb signal handling and first
 # sighting of a stale hash, never on every wake, so the per-wake triage stays
 # cheap.
+#
+# It also owns the lost-request policy for secondmates (secondmate_request_verdict
+# and scan_secondmate_requests): a secondmate pane is exempt from stale-pane
+# detection, so a marked request it never answers is surfaced by timeout instead.
 
 # Directory of this library, used to locate the sibling fm-crew-state.sh reader.
 # Resolved at source time from BASH_SOURCE so it works whether sourced by a
@@ -30,6 +34,15 @@ _FM_CLASSIFY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)"
 # Overridable so tests can stub the run-step/pane verdict without a real worktree
 # or no-mistakes install; absent, it points at the real sibling script.
 FM_CREW_STATE_BIN="${FM_CREW_STATE_BIN:-$_FM_CLASSIFY_LIB_DIR/fm-crew-state.sh}"
+
+# Outstanding from-firstmate request fields and helpers (record/clear contract).
+# shellcheck source=bin/fm-marker-lib.sh
+. "$_FM_CLASSIFY_LIB_DIR/fm-marker-lib.sh"
+
+# Seconds a secondmate may stay silent on the status path after a marked request
+# before the request is treated as lost (its turn likely died). The charter asks
+# for an answer or a working: acknowledgement well inside this window.
+FM_SECONDMATE_REQUEST_TIMEOUT_DEFAULT=1200
 
 # Captain-relevant status verbs. A status line carrying any of these is work
 # firstmate must see. Lines without these verbs are no-verb signals: the watcher
@@ -170,6 +183,49 @@ scan_captain_relevant_statuses() {  # <state>
     status_is_captain_relevant "$last" || continue
     task=$(basename "$f"); task="${task%.status}"
     printf '%s\t%s\t%s\n' "$f" "$task" "$last"
+  done
+  return 0
+}
+
+# Verdict for the outstanding from-firstmate request recorded in a secondmate's
+# meta (contract in bin/fm-marker-lib.sh). Prints one word:
+#   none      no request outstanding, or the meta is not kind=secondmate - the
+#             healthy-idle case, never a wake
+#   answered  the status file grew past the size recorded at send
+#   pending   unanswered, still inside the timeout
+#   overdue   unanswered past the timeout - a likely dead turn, surface it
+# Pure read of the meta and status file.
+secondmate_request_verdict() {  # <meta> <now> [timeout]
+  local meta=$1 now=$2 timeout=${3:-${FM_SECONDMATE_REQUEST_TIMEOUT:-$FM_SECONDMATE_REQUEST_TIMEOUT_DEFAULT}} ts bytes cur
+  grep -q '^kind=secondmate$' "$meta" 2>/dev/null || { printf 'none'; return 0; }
+  ts=$(fm_fromfirst_meta_field "$meta" fm_request_ts)
+  case "$ts" in ''|*[!0-9]*) printf 'none'; return 0 ;; esac
+  bytes=$(fm_fromfirst_meta_field "$meta" fm_request_status_bytes)
+  case "$bytes" in ''|*[!0-9]*) bytes=0 ;; esac
+  cur=$(fm_fromfirst_status_bytes "${meta%.meta}.status")
+  if [ "$cur" -gt "$bytes" ]; then
+    printf 'answered'
+  elif [ $((now - ts)) -ge "$timeout" ]; then
+    printf 'overdue'
+  else
+    printf 'pending'
+  fi
+}
+
+# Print "<meta>\t<task>\t<verdict>\t<age-secs>\t<request-ts>\t<summary>" for every
+# secondmate meta whose outstanding request is answered or overdue. Pending and
+# none are omitted. Pure detect: the caller clears answered requests and
+# enqueues-then-clears overdue ones.
+scan_secondmate_requests() {  # <state> <now> [timeout]
+  local state=$1 now=$2 timeout=${3:-${FM_SECONDMATE_REQUEST_TIMEOUT:-$FM_SECONDMATE_REQUEST_TIMEOUT_DEFAULT}} meta verdict ts task
+  for meta in "$state"/*.meta; do
+    [ -e "$meta" ] || continue
+    verdict=$(secondmate_request_verdict "$meta" "$now" "$timeout")
+    case "$verdict" in answered|overdue) ;; *) continue ;; esac
+    ts=$(fm_fromfirst_meta_field "$meta" fm_request_ts)
+    task=$(basename "$meta"); task=${task%.meta}
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$meta" "$task" "$verdict" "$((now - ts))" "$ts" \
+      "$(fm_fromfirst_meta_field "$meta" fm_request)"
   done
   return 0
 }

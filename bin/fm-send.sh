@@ -35,6 +35,8 @@
 # or a status-pointed doc instead of stranding it in chat the main firstmate
 # never reads. A crewmate/scout target, an explicit backend-target escape-hatch
 # target, and the --key path are never marked - their behavior is unchanged.
+# A delivered marked request is also recorded in the secondmate's meta so the
+# watcher surfaces it if no status answer arrives in time (bin/fm-marker-lib.sh).
 # After a successful text submit fm-send pauses FM_SEND_SETTLE seconds (default 1,
 # 0 disables) before returning: submit confirmation only proves the text was
 # accepted, but the harness needs a beat to spin up the turn before its busy
@@ -235,6 +237,12 @@ else
   # reads as text, so a pending verdict there is reinterpreted below instead of
   # being misreported as a swallowed Enter.
   alive_before=$(fm_backend_agent_alive "$TARGET_BACKEND" "$T" 2>/dev/null || printf unknown)
+  # A marked request expects an answer on the status path. Snapshot the time and
+  # status size BEFORE sending so a fast reply is never mistaken for silence.
+  if [ -n "$MARK_PREFIX" ]; then
+    req_ts=$(date +%s)
+    req_bytes=$(fm_fromfirst_status_bytes "$STATE/$(fm_send_id_from_meta "$TARGET_META").status")
+  fi
   # Type once, submit, verify. Lenient: only a positively-confirmed swallow
   # (text still in the composer) is an error; an unreadable pane is assumed sent.
   if ! verdict=$(fm_backend_send_text_submit "$TARGET_BACKEND" "$T" "$MARK_PREFIX$*" "$retries" "$sleep_s" "$settle" "$EXPECTED_LABEL"); then
@@ -276,6 +284,11 @@ else
       exit 1
       ;;
   esac
+  # Record the delivered marked request so the watcher can surface it if the
+  # secondmate never answers (contract in bin/fm-marker-lib.sh).
+  if [ -n "$MARK_PREFIX" ] && ! fm_fromfirst_request_record "$TARGET_META" "$req_ts" "$req_bytes" "$*"; then
+    echo "warning: request delivered to $T but not recorded in $TARGET_META; a lost reply will not be surfaced" >&2
+  fi
   # Submit landed (verdict was not pending/send-failed). Confirmation only proves
   # the text was accepted; the harness still needs a beat to spin up the
   # turn before its busy footer shows. Pause so an immediate peek catches the

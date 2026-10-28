@@ -158,6 +158,38 @@ ROWS
   pass "P precedence: explicit --model > route pin > secondmate-harness token > harness default, at every level"
 }
 
+# A route that mentions model: but does not parse to a valid pin fails the
+# spawn closed: no endpoint, no meta, and a fix pointer.
+test_malformed_route_pin_fails_closed() {
+  local route n w sm launchlog calls fakebin out status
+  n=0
+  for route in 'model:claude-opus-5' 'model: opus 5'; do
+    n=$((n + 1))
+    w=$(new_world "malformed-$n")
+    sm="$w/sm"
+    make_seeded_home "$sm" sm
+    printf 'claude claude-opus-5-5\n' > "$w/home/config/secondmate-harness"
+    printf -- '- sm - sm charter (home: %s; scope: sm work; projects: alpha; added 2026-01-01; %s)\n' \
+      "$sm" "$route" > "$w/home/data/secondmates.md"
+    fakebin=$(make_tmux "$w/tmux")
+    launchlog="$w/launch.log"; calls="$w/calls.log"
+    : > "$launchlog"; : > "$calls"
+    out=$(PATH="$fakebin:$BASE_PATH" TMUX='' CLAUDECODE=1 \
+      FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$w/home" \
+      FM_STATE_OVERRIDE="$w/home/state" FM_DATA_OVERRIDE="$w/home/data" \
+      FM_PROJECTS_OVERRIDE="$w/home/projects" FM_CONFIG_OVERRIDE="$w/home/config" \
+      FM_SPAWN_NO_GUARD=1 FM_FAKE_LAUNCH_LOG="$launchlog" FM_TMUX_CALL_LOG="$calls" \
+      "$ROOT/bin/fm-spawn.sh" sm --secondmate 2>&1); status=$?
+    [ "$status" -ne 0 ] || fail "'$route': a malformed route pin must fail the spawn"
+    assert_contains "$out" "route for sm has a malformed model pin" "'$route': no malformed-pin error"$'\n'"$out"
+    assert_contains "$out" "bin/fm-home-seed.sh model sm <model>" "'$route': error did not point at the fix"
+    [ ! -s "$calls" ] || fail "'$route': no endpoint may be created: $(cat "$calls")"
+    [ ! -s "$launchlog" ] || fail "'$route': no launch may be sent: $(cat "$launchlog")"
+    assert_absent "$w/home/state/sm.meta" "'$route': a malformed pin must not write meta"
+  done
+  pass "P a malformed route pin fails the secondmate spawn closed before any endpoint or meta"
+}
+
 # ===========================================================================
 # R) the bootstrap liveness sweep respawns with no --model and keeps the pin
 # ===========================================================================
@@ -300,6 +332,13 @@ test_registry_model_subcommand() {
   seed "$data" model nobody opus >/dev/null 2>&1 && fail "pinning an unregistered id must fail"
   cmp -s "$orig" "$reg" || fail "refused pins must not touch the registry"
 
+  # A rewrite that would leave the registry invalid is all-or-nothing.
+  sed -i.bak 's/^\(- fmp .*added 2026-01-01\))$/\1; model:bad)/' "$reg"
+  cp "$reg" "$w/broken"
+  seed "$data" model biochem claude-opus-5 >/dev/null 2>&1 && fail "pinning must fail while another route is malformed"
+  cmp -s "$w/broken" "$reg" || fail "a failed validation must leave the registry untouched"$'\n'"$(diff "$w/broken" "$reg")"
+  cp "$orig" "$reg"
+
   seed "$data" validate || fail "a clean registry should validate"
   sed -i.bak 's/added 2026-01-01)$/added 2026-01-01; model: default)/' "$reg"
   out=$(seed "$data" validate 2>&1) && fail "validate must refuse a 'default' pin on disk"
@@ -374,14 +413,20 @@ test_harness_binary_resolution() {
   [ ! -s "$launchlog" ] || fail "a missing binary must never send a launch: $(cat "$launchlog")"
   assert_absent "$w/home/state/sm.meta" "a missing binary must not write meta"
 
-  # A raw launch command is the unverified-adapter escape hatch and is sent as-is.
+  # A raw launch command is the unverified-adapter escape hatch and is sent as-is;
+  # it carries no model placeholder, so meta must not claim a route pin applied.
+  : > "$w/home/data/secondmates.md"
+  add_route "$w" sm "$sm" claude-opus-5
   out=$(spawn_sm "$w" sm "$launchlog" "myagent --flag" 2>&1); status=$?
   expect_code 0 "$status" "raw launch should not require a resolvable harness binary"$'\n'"$out"
   assert_contains "$(cat "$launchlog")" "myagent --flag" "raw launch command was rewritten"
+  [ "$(meta_field "$w/home/state/sm.meta" model)" = default ] \
+    || fail "raw launch: meta model '$(meta_field "$w/home/state/sm.meta" model)', expected default despite a route pin"
   pass "B template launches use the absolute harness path; a missing binary fails loudly before any endpoint; raw launches pass through"
 }
 
 test_precedence_table
+test_malformed_route_pin_fails_closed
 test_bootstrap_respawn_keeps_route_pin
 test_crew_and_scout_ignore_route_pin
 test_registry_model_subcommand

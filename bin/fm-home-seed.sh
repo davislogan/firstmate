@@ -265,7 +265,7 @@ validate_registry() {
           id=${line#- }
           id=${id%% *}
           case "$line" in
-            *"; model:"*)
+            *model:*)
               model_pin=$(printf '%s\n' "$line" | registry_model_for_line)
               valid_model_pin "$model_pin" || bad_models="${bad_models}${bad_models:+, }$id"
               ;;
@@ -932,13 +932,12 @@ route_model() {
     BEGIN { prefix = "- " id }
     (index($0, prefix " ") == 1 || $0 == prefix) { print new; next }
     { print }
-  ' "$REG" > "$tmp"; then
+  ' "$REG" > "$tmp" && REG=$tmp validate_registry; then
     mv "$tmp" "$REG"
   else
     rm -f "$tmp"
     return 1
   fi
-  validate_registry
 }
 
 seed_home() {

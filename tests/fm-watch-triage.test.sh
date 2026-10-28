@@ -36,7 +36,7 @@ watch_bg() {  # <state> <fakebin> <out> [extra env assignments...]
   local state=$1 fakebin=$2 out=$3
   shift 3
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
-    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$@" "$WATCH" > "$out" &
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 env "$@" "$WATCH" > "$out" &
 }
 
 # Wait up to <limit> 0.1s ticks while <pid> stays alive; 0 if still alive, 1 if it died.
@@ -983,6 +983,123 @@ test_afk_present_reverts_watcher_to_one_shot() {
   pass "with .afk present the watcher reverts to one-shot so the daemon owns triage (no double-triage)"
 }
 
+# --- lost from-firstmate requests to secondmates -----------------------------
+# A secondmate pane is exempt from stale detection, so a marked request whose turn
+# died would vanish. fm-send records the request in the secondmate's meta
+# (bin/fm-marker-lib.sh); the shared classifier judges it, and the watcher surfaces
+# an unanswered one exactly once after FM_SECONDMATE_REQUEST_TIMEOUT.
+
+# write_secondmate_request <state> <id> <ts> <status-bytes>: a kind=secondmate meta
+# with an outstanding request recorded the way fm-send records it.
+write_secondmate_request() {
+  local state=$1 id=$2 ts=$3 bytes=$4
+  fm_write_secondmate_meta "$state/$id.meta" "$state/../home-$id" "sess:fm-$id"
+  fm_fromfirst_request_record "$state/$id.meta" "$ts" "$bytes" "triage the flaky login test" \
+    || fail "could not record a request in $state/$id.meta"
+}
+
+test_secondmate_request_verdict_classifier() {
+  local dir state now
+  dir=$(make_case classify-sm-request); state="$dir/state"; now=$(date +%s)
+  fm_write_secondmate_meta "$state/idle.meta" "$dir/home-idle" "sess:fm-idle"
+  [ "$(secondmate_request_verdict "$state/idle.meta" "$now" 60)" = none ] \
+    || fail "an idle secondmate with no outstanding request was not 'none'"
+  write_secondmate_request "$state" fresh "$now" 0
+  [ "$(secondmate_request_verdict "$state/fresh.meta" "$now" 60)" = pending ] \
+    || fail "a fresh unanswered request was not 'pending'"
+  write_secondmate_request "$state" lost $((now - 120)) 0
+  [ "$(secondmate_request_verdict "$state/lost.meta" "$now" 60)" = overdue ] \
+    || fail "an unanswered request past the timeout was not 'overdue'"
+  write_secondmate_request "$state" badcfg $((now - FM_SECONDMATE_REQUEST_TIMEOUT_DEFAULT - 1)) 0
+  [ "$(secondmate_request_verdict "$state/badcfg.meta" "$now" 20m 2>&1)" = overdue ] \
+    || fail "a non-numeric timeout did not fall back to the default"
+  [ "$(FM_SECONDMATE_REQUEST_TIMEOUT=20m secondmate_request_verdict "$state/fresh.meta" "$now" 2>&1)" = pending ] \
+    || fail "a non-numeric FM_SECONDMATE_REQUEST_TIMEOUT did not fall back to the default"
+  printf 'old: line\n' > "$state/ans.status"
+  write_secondmate_request "$state" ans $((now - 120)) "$(fm_fromfirst_status_bytes "$state/ans.status")"
+  [ "$(secondmate_request_verdict "$state/ans.meta" "$now" 60)" = overdue ] \
+    || fail "a pre-existing status line was mistaken for an answer"
+  printf 'done: login test fixed\n' >> "$state/ans.status"
+  [ "$(secondmate_request_verdict "$state/ans.meta" "$now" 60)" = answered ] \
+    || fail "a status line after the request was not 'answered'"
+  fm_write_meta "$state/crew.meta" "window=sess:fm-crew" "kind=ship" "fm_request_ts=$((now - 120))" "fm_request_status_bytes=0"
+  [ "$(secondmate_request_verdict "$state/crew.meta" "$now" 60)" = none ] \
+    || fail "a non-secondmate meta produced a request verdict"
+  pass "secondmate_request_verdict: none/pending/overdue/answered keyed on status growth past the send"
+}
+
+test_secondmate_dead_turn_request_surfaces_once() {
+  local dir state fakebin out drain_out pid
+  dir=$(make_case sm-request-lost); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  # The request went out 120s ago and the secondmate wrote nothing since: its
+  # turn died. Its idle pane is exempt from stale detection, so only the request
+  # timeout can catch this.
+  write_secondmate_request "$state" domain $(( $(date +%s) - 120 )) 0
+  watch_bg "$state" "$fakebin" "$out" FM_SECONDMATE_REQUEST_TIMEOUT=60
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "a lost secondmate request did not wake the watcher"
+  grep -F "check: secondmate-request: domain:" "$out" >/dev/null \
+    || fail "lost-request wake reason did not name the secondmate: $(cat "$out")"
+  grep -F "triage the flaky login test" "$out" >/dev/null \
+    || fail "lost-request wake reason did not name the request: $(cat "$out")"
+  grep -q '^fm_request' "$state/domain.meta" && fail "surfaced request was not cleared from meta"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the lost-request wake failed"
+  [ "$(grep -c 'secondmate-request:domain' "$drain_out")" -eq 1 ] \
+    || fail "lost request was not queued exactly once: $(cat "$drain_out")"
+  # A fresh watcher must not re-fire the same lost request.
+  : > "$out"
+  watch_bg "$state" "$fakebin" "$out" FM_SECONDMATE_REQUEST_TIMEOUT=60
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "watcher re-fired an already-surfaced lost request: $(cat "$out")"
+  fi
+  reap "$pid"
+  [ ! -s "$state/.wake-queue" ] || fail "an already-surfaced lost request was enqueued again"
+  pass "a dead secondmate turn holding a request surfaces exactly one clear wake, then clears"
+}
+
+test_secondmate_answered_request_no_wake() {
+  local dir state fakebin out pid
+  dir=$(make_case sm-request-answered); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  # Request long past the timeout, but the secondmate answered on the status
+  # path. The answer's own signal is already delivered (primed .seen-*), so any
+  # wake here could only be a false lost-request alarm.
+  write_secondmate_request "$state" domain $(( $(date +%s) - 120 )) 0
+  printf 'done: flaky login test triaged, see data/report.md\n' > "$state/domain.status"
+  seen_sig "$state/domain.status" > "$state/.seen-domain_status"
+  printf 'done: flaky login test triaged, see data/report.md' > "$state/.hb-surfaced-domain"
+  watch_bg "$state" "$fakebin" "$out" FM_SECONDMATE_REQUEST_TIMEOUT=60
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "an answered secondmate request woke the watcher: $(cat "$out")"
+  fi
+  reap "$pid"
+  [ ! -s "$out" ] || fail "an answered request printed a wake reason: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "an answered request enqueued a wake"
+  grep -q '^fm_request' "$state/domain.meta" && fail "answered request was not cleared from meta"
+  grep -q '^kind=secondmate$' "$state/domain.meta" || fail "clearing the request damaged the rest of the meta"
+  pass "a secondmate request answered on the status path is cleared with no wake"
+}
+
+test_idle_secondmate_without_request_no_wake() {
+  local dir state fakebin out pid capture
+  dir=$(make_case sm-idle); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  # A healthy idle secondmate: unchanging pane, no status, no outstanding request.
+  fm_write_secondmate_meta "$state/domain.meta" "$dir/home-domain" "sess:fm-domain"
+  capture="$dir/pane.txt"; printf 'idle prompt\n> \n' > "$capture"
+  watch_bg "$state" "$fakebin" "$out" FM_SECONDMATE_REQUEST_TIMEOUT=0 \
+    FM_FAKE_TMUX_WINDOW=fm-domain FM_FAKE_TMUX_CAPTURE="$capture"
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "an idle secondmate with no request woke the watcher: $(cat "$out")"
+  fi
+  reap "$pid"
+  [ ! -s "$out" ] || fail "an idle secondmate printed a wake reason: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "an idle secondmate enqueued a wake"
+  pass "an idle secondmate with no outstanding request never wakes, even at a zero timeout"
+}
+
 test_signal_reason_is_actionable_classifier
 test_stale_is_terminal_classifier
 test_scan_captain_relevant_statuses_classifier
@@ -1012,3 +1129,7 @@ test_heartbeat_no_change_absorbed
 test_heartbeat_backstop_surfaces_unsurfaced_status
 test_beacon_stays_fresh_while_absorbing
 test_afk_present_reverts_watcher_to_one_shot
+test_secondmate_request_verdict_classifier
+test_secondmate_dead_turn_request_surfaces_once
+test_secondmate_answered_request_no_wake
+test_idle_secondmate_without_request_no_wake

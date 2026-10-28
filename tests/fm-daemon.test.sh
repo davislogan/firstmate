@@ -1200,7 +1200,7 @@ test_guard_surfaces_live_wedge_marker() {
   assert_contains "$out" "●  AWAY-MODE ESCALATIONS WEDGED - THEY NEVER REACHED THIS PANE" "guard did not surface a live wedge with no tasks in flight"
   assert_contains "$out" "12683s undelivered" "guard banner lacks the wedge age"
   assert_contains "$out" "Out-of-band email: emailed the captain" "guard banner lacks the out-of-band outcome"
-  assert_contains "$out" "rm -f $state/.subsuper-inject-wedged" "guard banner lacks the clear instruction"
+  assert_contains "$out" "rm -f $state/.subsuper-inject-wedged $state/.subsuper-escalations $state/.subsuper-escalations.since" "guard banner lacks the clear instruction"
   out=$(FM_GUARD_READ_ONLY=1 FM_ROOT_OVERRIDE="$dir" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-guard.sh" 2>&1)
   assert_not_contains "$out" "rm -f" "read-only guard offered to clear the wedge"
   pass "fm-guard surfaces a live inject-wedged marker in a bordered alarm on the next fleet action"

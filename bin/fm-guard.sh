@@ -86,7 +86,7 @@ if [ -s "$wedge_marker" ]; then
       printf '●  This read-only session should report the wedge, not clear it.\n'
     else
       printf '●  Handle those items now (they may include the captain'"'"'s own mail), then clear the alarm:\n'
-      printf '●      rm -f %s\n' "$wedge_marker"
+      printf '●      rm -f %s %s %s\n' "$wedge_marker" "$STATE/.subsuper-escalations" "$STATE/.subsuper-escalations.since"
     fi
     printf '●  %s\n' "$CONTINUE_LINE"
     printf '●%s\n' "$wrule"

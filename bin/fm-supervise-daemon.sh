@@ -628,7 +628,7 @@ inject_wedge_alarm() {  # <state> <age-seconds>
 OOB_STATUS=
 oob_deliver() {  # <state> <age-seconds>
   local state=$1 age=$2 buf body sent attempt hash addr subject n rc
-  local -a to_args=() cmd=()
+  local -a to_args=() cmd=() addrs=()
   buf="$state/.subsuper-escalations"
   sent="$state/.subsuper-oob-sent"
   attempt="$state/.subsuper-oob-attempt"
@@ -638,7 +638,9 @@ oob_deliver() {  # <state> <age-seconds>
   fmm_load_config
   fmm_enabled || { OOB_STATUS="unavailable: mail mode is off"; return 1; }
   fmm_send_enabled || { OOB_STATUS="unavailable: FM_MAIL_SEND is not 1"; return 1; }
-  for addr in $(printf '%s' "$FMM_INTAKE" "," "$FMM_CAPTAIN" | tr ',;' '  '); do
+  IFS=$', ;\t\n' read -r -d '' -a addrs < <(printf '%s,%s\0' "$FMM_INTAKE" "$FMM_CAPTAIN")
+  for addr in "${addrs[@]}"; do
+    [ -n "$addr" ] || continue
     case "$addr" in
       *[!A-Za-z0-9._%+@-]*|*@*@*|@*|*@|.*) OOB_STATUS="refused: malformed mail address in config"; log "ERROR: out-of-band email refused: malformed address in mail config"; return 1 ;;
       *@*.*) ;;
@@ -646,7 +648,8 @@ oob_deliver() {  # <state> <age-seconds>
     esac
   done
   case "$FMM_INTAKE" in *[,\;[:space:]]*) OOB_STATUS="refused: FM_MAIL_INTAKE must be one address"; return 1 ;; esac
-  for addr in $(printf '%s' "$FMM_CAPTAIN" | tr ',;' '  '); do to_args+=(--to "$addr"); done
+  IFS=$', ;\t\n' read -r -d '' -a addrs < <(printf '%s\0' "$FMM_CAPTAIN")
+  for addr in "${addrs[@]}"; do [ -z "$addr" ] || to_args+=(--to "$addr"); done
   [ "${#to_args[@]}" -gt 0 ] || { OOB_STATUS="unavailable: no captain address"; return 1; }
   hash=$(_hash_text "$(cat "$buf" 2>/dev/null)")
   if [ "$(sed -n 2p "$sent" 2>/dev/null)" = "$hash" ]; then
@@ -658,7 +661,7 @@ oob_deliver() {  # <state> <age-seconds>
     return 1
   fi
   fmm_resolve_axi || { OOB_STATUS="unavailable: $FMM_AXI_ERROR"; log "ERROR: out-of-band email unavailable: $FMM_AXI_ERROR"; return 1; }
-  body=$(mktemp "$state/.subsuper-oob-body.XXXXXX") || { OOB_STATUS="failed: could not write body file"; return 1; }
+  body=$(mktemp "${TMPDIR:-/tmp}/fm-oob-body.XXXXXX") || { OOB_STATUS="failed: could not write body file"; return 1; }
   n=$(wc -l < "$buf" 2>/dev/null | tr -d ' ')
   {
     printf 'Firstmate could not deliver %s away-mode escalation(s) to its terminal for %ss.\n' "$n" "$age"

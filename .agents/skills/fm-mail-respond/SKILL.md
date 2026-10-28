@@ -79,7 +79,7 @@ For each `<req>`:
    - name `data/mail-requests/<req>/out/` as the place for deliverables meant to go back to the captain.
    After `bin/fm-spawn.sh`, link the task: `bin/fm-mail-link.sh <task-id> <req>`.
 6. **Reply.** The helpers below send when `FM_MAIL_SEND=1` and draft otherwise (`--draft` forces a draft, `--send` insists on sending and fails if sending is not opted in); the commands are the same either way.
-   Write the body to a temp file with your file-writing tool, then:
+   Write the body to a temp file with your file-writing tool, as HTML (replies default to HTML; pass `--text` for a plain-text body, see `docs/configuration.md` "Mail mode (.env)"), then:
    - Work finished this turn (question answered, backlog filed): one final draft, `bin/fm-mail-reply.sh <req> --body-file <path> [--attach <out-file>]... --done`.
    - Work spawned: an acknowledgement draft now, `bin/fm-mail-reply.sh <req> --body-file <path>` (no `--done`), saying what was picked up and that results will follow in this thread.
      If the request waited while firstmate was down, say it was picked up late.
@@ -93,7 +93,7 @@ On a milestone the captain would want, or on the task's terminal wake (PR ready 
 
 1. `bin/fm-mail-followup.sh --check <task-id>` prints the `<req>` when the task is mail-linked.
 2. Put deliverables in `data/mail-requests/<req>/out/` (for a scout, the relevant report content or a copy of the report; for a ship, the PR URL in the body).
-3. Write the reply body to a file and run `bin/fm-mail-followup.sh <task-id> [--attach <out-file>]... --body-file <path>`; use `--final` for the terminal outcome, which also moves the message to `done` and clears the link.
+3. Write the reply body to a file as HTML (follow-ups default to HTML like replies; pass `--text` for a plain-text body) and run `bin/fm-mail-followup.sh <task-id> [--text] [--attach <out-file>]... --body-file <path>`; use `--final` for the terminal outcome, which also moves the message to `done` and clears the link.
    Exit 6 means the draft landed but the move failed; retry only the move with `bin/fm-mail-reply.sh <req> --done`.
    Exit 7 means the final draft landed but the link could not be cleared; do not retry the draft, remove the `mail_req=` and `mail_req_ts=` lines from `state/<task-id>.meta` instead.
    Do this before tearing the task down.

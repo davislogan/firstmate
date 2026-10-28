@@ -2,7 +2,7 @@
 # Create a threaded reply to a mail-mode request (DRAFT by default, SENT when
 # opted in), and/or file the original message in the "done" folder.
 #
-# Usage: fm-mail-reply.sh <req> --body-file <path> [--attach <file>]... [--send|--draft] [--done]
+# Usage: fm-mail-reply.sh <req> --body-file <path> [--attach <file>]... [--send|--draft] [--html|--text] [--done]
 #        fm-mail-reply.sh <req> --done
 #   Reads the Graph id from data/mail-requests/<req>/request.json (written by
 #   bin/fm-mail-ingest.sh) and runs
@@ -18,6 +18,11 @@
 #   been run first. --send requests send mode explicitly and is refused unless
 #   FM_MAIL_SEND=1; --draft forces a draft even when send is opted in.
 #   Each draft/sent id is appended to data/mail-requests/<req>/replies.log and printed.
+#   HTML: replies default to HTML (mail-axi --html, the body file is HTML).
+#   --text forces a plain-text body; FM_MAIL_HTML=0 in .env (or the environment)
+#   flips the default to plain, and --html then opts back in per call. HTML only
+#   changes the body format: the recipient (the verified sender), the captain cc,
+#   and the --allow-from allowlist are built exactly as for plain text.
 #   --attach paths must resolve inside data/mail-requests/<req>/out/, so a reply
 #   can never carry an arbitrary local file; copy deliverables there first.
 #   --done then runs `mail-axi move <graphId> --folder done --mailbox ...`.
@@ -36,18 +41,19 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$SCRIPT_DIR/fm-mail-lib.sh"
 
 usage() {
-  echo "usage: fm-mail-reply.sh <req> --body-file <path> [--attach <file>]... [--send|--draft] [--done] | <req> --done" >&2
+  echo "usage: fm-mail-reply.sh <req> --body-file <path> [--attach <file>]... [--send|--draft] [--html|--text] [--done] | <req> --done" >&2
 }
 
 REQ=${1:-}
 [ -n "$REQ" ] || { usage; exit 2; }
-case "$REQ" in -h|--help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+case "$REQ" in -h|--help) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
 shift
 fmm_safe_slug "$REQ" || { echo "fm-mail-reply: unsafe request id: $REQ" >&2; exit 2; }
 
 BODY=
 DONE=0
 WANT=
+FORMAT=
 ATTACH=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -55,6 +61,8 @@ while [ "$#" -gt 0 ]; do
     --attach) [ "$#" -ge 2 ] || { usage; exit 2; }; ATTACH+=("$2"); shift 2 ;;
     --send) WANT=send; shift ;;
     --draft) WANT=draft; shift ;;
+    --html) FORMAT=html; shift ;;
+    --text) FORMAT=text; shift ;;
     --done) DONE=1; shift ;;
     *) usage; exit 2 ;;
   esac
@@ -103,6 +111,9 @@ if [ -n "$BODY" ]; then
       *) echo "fm-mail-reply: attachments must live under $DIR/out/: $f" >&2; exit 2 ;;
     esac
   done
+  if [ "$FORMAT" = html ] || { [ "$FORMAT" != text ] && fmm_html_default; }; then
+    args+=(--html)
+  fi
   errf=$(mktemp "${TMPDIR:-/tmp}/fm-mail-reply.XXXXXX") || { echo "fm-mail-reply: mktemp failed" >&2; exit 1; }
   if ! draft=$("$FMM_AXI" "${args[@]}" 2>"$errf"); then
     err=$(tr -d '\r' < "$errf" | grep -v '^[[:space:]]*$' | tail -n3 | tr -cd '[:print:]\n' | cut -c1-300)

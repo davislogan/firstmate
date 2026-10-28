@@ -712,6 +712,57 @@ test_poll_timeout
 test_poll_failure_threshold
 test_poll_failure_log_bounded
 test_poll_stagger_in_budget
+test_poll_knobs_from_env_file() {
+  local home fakebin out
+  home=$(make_home poll-knobs); fakebin=$(make_fake_mail_axi "$home")
+  printf 'FM_MAIL_ERROR_THRESHOLD=3\n' >> "$home/.env"
+  out=$(FAKE_INTAKE_MODE=fail run_poll "$home" "$fakebin")
+  [ -z "$out" ] || fail "threshold 3 from .env must suppress the first failure (got: $out)"
+  out=$(FAKE_INTAKE_MODE=fail run_poll "$home" "$fakebin")
+  [ -z "$out" ] || fail "threshold 3 from .env must suppress the second failure (got: $out)"
+  out=$(FAKE_INTAKE_MODE=fail run_poll "$home" "$fakebin")
+  assert_contains "$out" "mail-intake-error" "the third consecutive failure must surface"
+  rm -f "$home/state/mail-poll."*
+  out=$(FAKE_INTAKE_MODE=fail FM_MAIL_ERROR_THRESHOLD=1 run_poll "$home" "$fakebin")
+  assert_contains "$out" "mail-intake-error" "an environment value must win over .env"
+  command -v timeout >/dev/null 2>&1 || { pass "fm-mail-poll reads threshold and timeout from .env (timeout half skipped: no timeout binary)"; return; }
+  rm -f "$home/state/mail-poll."*
+  printf 'FM_MAIL_ERROR_THRESHOLD=1\nFM_MAIL_POLL_TIMEOUT=1\n' >> "$home/.env"
+  out=$(FAKE_INTAKE_MODE="sleep" run_poll "$home" "$fakebin")
+  assert_contains "$out" "timed out after 1s" "FM_MAIL_POLL_TIMEOUT from .env must bound the call"
+  pass "fm-mail-poll reads threshold and timeout from .env, with the environment winning"
+}
+
+test_reply_html_format() {
+  local home fakebin req=20261010-1412-a3f9c1 dir
+  home=$(make_home fmt); fakebin=$(make_fake_mail_axi "$home")
+  seed_request "$home" "$req"; dir="$home/data/mail-requests/$req"
+  printf '<p>Done, captain.</p>\n' > "$home/body.txt"
+  PATH="$fakebin:$PATH" FM_HOME="$home" FAKE_MAIL_LOG="$home/mail.log" "$ROOT/bin/fm-mail-reply.sh" "$req" --body-file "$home/body.txt" >/dev/null
+  assert_grep " --html" "$home/mail.log" "HTML must be the default"
+  : > "$home/mail.log"
+  PATH="$fakebin:$PATH" FM_HOME="$home" FAKE_MAIL_LOG="$home/mail.log" "$ROOT/bin/fm-mail-reply.sh" "$req" --body-file "$home/body.txt" --text >/dev/null
+  assert_no_grep "html" "$home/mail.log" "--text must send plain text"
+  : > "$home/mail.log"
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_MAIL_HTML=0 FAKE_MAIL_LOG="$home/mail.log" "$ROOT/bin/fm-mail-reply.sh" "$req" --body-file "$home/body.txt" >/dev/null
+  assert_no_grep "html" "$home/mail.log" "FM_MAIL_HTML=0 must flip the default to plain"
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_MAIL_HTML=0 FAKE_MAIL_LOG="$home/mail.log" "$ROOT/bin/fm-mail-reply.sh" "$req" --body-file "$home/body.txt" --html >/dev/null
+  assert_grep "--html" "$home/mail.log" "--html must opt in when the default is plain"
+  : > "$home/mail.log"
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_MAIL_SEND=1 FAKE_MAIL_LOG="$home/mail.log" "$ROOT/bin/fm-mail-reply.sh" "$req" --body-file "$home/body.txt" >/dev/null
+  assert_grep "reply-send AAkALgAA-graph_id= --mailbox firstmate@example.com --body-file $home/body.txt --cc-captain --allow-from captain@example.com --html" "$home/mail.log" "send must keep the allowlist and cc args and only add --html"
+  : > "$home/mail.log"
+  printf 'window=fm-t1\nkind=ship\n' > "$home/state/t1.meta"
+  FM_HOME="$home" "$ROOT/bin/fm-mail-link.sh" t1 "$req" >/dev/null
+  PATH="$fakebin:$PATH" FM_HOME="$home" FAKE_MAIL_LOG="$home/mail.log" "$ROOT/bin/fm-mail-followup.sh" t1 --text --body-file "$home/body.txt" >/dev/null
+  assert_no_grep "html" "$home/mail.log" "followup --text must pass through"
+  PATH="$fakebin:$PATH" FM_HOME="$home" FAKE_MAIL_LOG="$home/mail.log" "$ROOT/bin/fm-mail-followup.sh" t1 --html --body-file "$home/body.txt" >/dev/null
+  assert_grep " --html" "$home/mail.log" "followup --html must pass through"
+  pass "fm-mail-reply and fm-mail-followup default to HTML, with --text and FM_MAIL_HTML=0 for plain, recipients untouched"
+}
+
+test_poll_knobs_from_env_file
+test_reply_html_format
 test_bootstrap_opt_in_and_out
 test_bootstrap_missing_mail_axi
 test_supervision_instructions_source_mail_cadence

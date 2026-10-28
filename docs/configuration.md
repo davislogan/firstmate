@@ -262,7 +262,7 @@ Like X mode, mail mode makes no edit to `bin/fm-watch.sh`, `bin/fm-watch-arm.sh`
 
 ### Intake and trust
 
-`bin/fm-mail-poll.sh` runs, bounded by `FM_MAIL_POLL_TIMEOUT` (default 20s, kept below `FM_CHECK_TIMEOUT`):
+`bin/fm-mail-poll.sh` runs, bounded by `FM_MAIL_POLL_TIMEOUT` (default 20s, kept below `FM_CHECK_TIMEOUT`; `FM_MAIL_POLL_TIMEOUT` and `FM_MAIL_ERROR_THRESHOLD` can be set per home in `.env`, with an environment value winning):
 
 ```sh
 mail-axi intake --mailbox <FM_MAIL_INTAKE> --stash-dir state/mail-inbox --allow-from <FM_MAIL_CAPTAIN> --tenant <FM_MAIL_TENANT> --json
@@ -314,10 +314,10 @@ It extracts one nested zip level and skips deeper archives; files are written `0
 
 ### Replies
 
-`bin/fm-mail-reply.sh <req> --body-file <path> [--attach <file>]... [--done]` runs:
+`bin/fm-mail-reply.sh <req> --body-file <path> [--attach <file>]... [--send|--draft] [--html|--text] [--done]` runs:
 
 ```sh
-mail-axi reply-draft <graphId> --mailbox <FM_MAIL_INTAKE> --body-file <path> [--attach <file>]...
+mail-axi reply-draft <graphId> --mailbox <FM_MAIL_INTAKE> --body-file <path> [--attach <file>]... [--html]
 ```
 
 That creates a threaded reply draft in the intake mailbox's Drafts, and the recipient is always the original verified sender.
@@ -325,7 +325,7 @@ Drafts are the default.
 Real sends are opt-in: set `FM_MAIL_SEND=1` in `.env` (or the environment) and the same helpers run
 
 ```sh
-mail-axi reply-send <graphId> --mailbox <FM_MAIL_INTAKE> --body-file <path> --cc-captain --allow-from <FM_MAIL_CAPTAIN> [--attach <file>]...
+mail-axi reply-send <graphId> --mailbox <FM_MAIL_INTAKE> --body-file <path> --cc-captain --allow-from <FM_MAIL_CAPTAIN> [--attach <file>]... [--html]
 ```
 
 instead, so the reply is sent from the intake mailbox.
@@ -334,12 +334,16 @@ The tenant enforces "never outside the org" server side.
 If a send fails, mail-axi's error is forwarded; a failed send may still have gone out, so check `replies.log` and the intake mailbox's Sent Items before retrying.
 The tenant admin script (`phase2-send`) must be run first to grant the intake mailbox send rights, or sends fail.
 `--send` insists on sending and exits 2 unless `FM_MAIL_SEND=1`; `--draft` forces a draft even when sends are opted in.
+Replies are HTML by default: the helpers append mail-axi's own `--html` and the body file must be HTML.
+`--text` forces a plain-text body for one call, `--html` forces HTML, and `FM_MAIL_HTML=0` in `.env` (or the environment) flips the default to plain text.
+The format flag changes only how the body is rendered; the recipient, the captain cc, and `--allow-from` are built exactly as without it, so the allowlist stays mail-axi's.
+`bin/fm-mail-followup.sh` accepts and passes through the same `--html` and `--text`.
 Email confirmation or approval of T2 actions is not implemented; those stay terminal-only.
 Attachments must resolve inside the request's `out/` folder.
 `--done` then runs `mail-axi move <graphId> --folder done --mailbox <FM_MAIL_INTAKE>`.
 Draft and sent ids are logged to the request's `replies.log`.
 A request that spawns work is linked with `bin/fm-mail-link.sh <task-id> <req>` (`mail_req=` and `mail_req_ts=` in the task meta).
-`bin/fm-mail-followup.sh <task-id> [--final] [--send|--draft] --body-file <path>` drafts (or sends) a follow-up for a linked task; `--final` also moves the message to `done` and clears the link.
+`bin/fm-mail-followup.sh <task-id> [--final] [--send|--draft] [--html|--text] [--attach <file>]... --body-file <path>` drafts (or sends) a follow-up for a linked task; `--final` also moves the message to `done` and clears the link.
 It exits 6 when the draft landed but the move failed, and 7 when the final draft landed but the link could not be cleared; neither should be retried as a new draft.
 
 ## Environment variables
@@ -397,10 +401,11 @@ FM_MAIL_INTAKE=          # mail mode intake mailbox; with FM_MAIL_CAPTAIN in .en
 FM_MAIL_CAPTAIN=         # mail mode allowed sender address, or a comma-separated allowlist
 FM_MAIL_SEND=            # optional; 1 = really send mail-mode replies instead of leaving drafts
 FM_MAIL_TENANT=          # tenant id mail-axi verifies on every intake message
+FM_MAIL_HTML=            # optional; 0 = mail-mode replies default to plain text instead of HTML (--html/--text override per call)
 FM_MAIL_AXI=             # absolute path to the mail tool; unset = the single mail-axi on PATH (ambiguous PATH fails closed)
 FM_MAIL_ENV_FILE=        # optional alternate .env file for direct mail-mode client invocations; bootstrap still checks $FM_HOME/.env
-FM_MAIL_POLL_TIMEOUT=20  # seconds allowed for one mail-axi intake call; with the stagger, kept below FM_CHECK_TIMEOUT
-FM_MAIL_ERROR_THRESHOLD=2  # consecutive failed polls before a transient-prone mail-axi failure surfaces as mail-intake-error
+FM_MAIL_POLL_TIMEOUT=20  # (also settable in the home .env) seconds allowed for one mail-axi intake call; with the stagger, kept below FM_CHECK_TIMEOUT
+FM_MAIL_ERROR_THRESHOLD=2  # (also settable in the home .env) consecutive failed polls before a transient-prone mail-axi failure surfaces as mail-intake-error
 FM_MAIL_STAGGER_MAX=5    # max seconds of deterministic per-home sleep before the mail-axi call; capped at a quarter of FM_CHECK_TIMEOUT
 FM_MAIL_PENDING_REWAKE=1800  # seconds before an unchanged set of stranded inbox stashes re-wakes firstmate
 FM_MAIL_MAX_FILE_BYTES=26214400      # per-attachment download cap (25 MiB)

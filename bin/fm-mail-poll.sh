@@ -39,14 +39,14 @@
 # or have no stash file are ignored.
 # Every run also triggers bin/fm-mail-prune.sh --if-due (silent, at most daily).
 #
-# Config (home .env, FM_MAIL_ENV_FILE, or env): FM_MAIL_INTAKE, FM_MAIL_CAPTAIN
+# Config (home .env, FM_MAIL_ENV_FILE, or env; the environment wins): FM_MAIL_INTAKE, FM_MAIL_CAPTAIN
 # (comma-separated allowlist passed to --allow-from), FM_MAIL_TENANT (required
 # once mail mode is on), FM_MAIL_AXI (absolute path to the mail tool; resolved
 # fail-closed by fmm_resolve_axi in bin/fm-mail-lib.sh, never a bare PATH
-# lookup when set). FM_MAIL_POLL_TIMEOUT (default 20s, kept below
+# lookup when set). FM_MAIL_POLL_TIMEOUT (default 20s, also read from .env, kept below
 # FM_CHECK_TIMEOUT) bounds the mail-axi call. FM_MAIL_PENDING_REWAKE (default
 # 1800s) rate-limits the reminder wake for stashes left in the inbox.
-# FM_MAIL_ERROR_THRESHOLD (default 2) is the consecutive-failure count that
+# FM_MAIL_ERROR_THRESHOLD (default 2, also read from .env) is the consecutive-failure count that
 # surfaces a transient-prone failure. FM_MAIL_STAGGER_MAX (default 5s, at most a
 # quarter of FM_CHECK_TIMEOUT) bounds a deterministic per-home sleep
 # (cksum of FM_HOME mod max+1) before the mail-axi call so homes polling one
@@ -175,7 +175,7 @@ fail_poll() {
 transient_fail() {
   local n threshold
   log_failure "$1" "$2" "$3"
-  threshold=${FM_MAIL_ERROR_THRESHOLD:-2}
+  threshold=${FMM_ERROR_THRESHOLD:-2}
   case "$threshold" in ''|*[!0-9]*) threshold=2 ;; esac
   n=$(cat "$FAILCOUNT_FILE" 2>/dev/null)
   case "$n" in ''|*[!0-9]*) n=0 ;; esac
@@ -197,7 +197,7 @@ command -v jq >/dev/null 2>&1 || fail_poll "missing jq"
 fmm_resolve_axi || fail_poll "$FMM_AXI_ERROR"
 mkdir -p "$INBOX" 2>/dev/null || fail_poll "cannot create inbox"
 
-limit=${FM_MAIL_POLL_TIMEOUT:-20}
+limit=${FMM_POLL_TIMEOUT:-20}
 case "$limit" in ''|*[!0-9]*) limit=20 ;; esac
 check_limit=${FM_CHECK_TIMEOUT:-30}
 case "$check_limit" in ''|*[!0-9]*) check_limit=30 ;; esac

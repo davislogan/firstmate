@@ -9,8 +9,9 @@
 # This file is sourced, never executed. It reuses fm-x-lib.sh's generic .env and
 # meta readers and defines:
 #   fmm_load_config            - resolve FMM_INTAKE, FMM_CAPTAIN, FMM_TENANT,
-#                                FMM_SEND, FMM_AXI_SETTING (an explicit
-#                                environment value wins over .env)
+#                                FMM_SEND, FMM_AXI_SETTING, FMM_HTML,
+#                                FMM_POLL_TIMEOUT, FMM_ERROR_THRESHOLD (an
+#                                explicit environment value wins over .env)
 #   fmm_resolve_axi            - resolve the mail tool into FMM_AXI and export
 #                                FM_HOME; on failure set FMM_AXI_ERROR and return 1
 #   fmm_enabled                - true when FMM_INTAKE and FMM_CAPTAIN are set
@@ -45,6 +46,17 @@ fmm_load_config() {
   if [ -n "${FM_MAIL_TENANT+x}" ]; then FMM_TENANT=${FM_MAIL_TENANT-}; else FMM_TENANT=$(fmx_env_get FM_MAIL_TENANT "$env_file"); fi
   if [ -n "${FM_MAIL_SEND+x}" ]; then FMM_SEND=${FM_MAIL_SEND-}; else FMM_SEND=$(fmx_env_get FM_MAIL_SEND "$env_file"); fi
   if [ -n "${FM_MAIL_AXI+x}" ]; then FMM_AXI_SETTING=${FM_MAIL_AXI-}; else FMM_AXI_SETTING=$(fmx_env_get FM_MAIL_AXI "$env_file"); fi
+  # shellcheck disable=SC2034 # FMM_HTML is read by fm-mail-reply.sh.
+  if [ -n "${FM_MAIL_HTML+x}" ]; then FMM_HTML=${FM_MAIL_HTML-}; else FMM_HTML=$(fmx_env_get FM_MAIL_HTML "$env_file"); fi
+  # shellcheck disable=SC2034 # FMM_POLL_TIMEOUT and FMM_ERROR_THRESHOLD are read by fm-mail-poll.sh.
+  if [ -n "${FM_MAIL_POLL_TIMEOUT+x}" ]; then FMM_POLL_TIMEOUT=${FM_MAIL_POLL_TIMEOUT-}; else FMM_POLL_TIMEOUT=$(fmx_env_get FM_MAIL_POLL_TIMEOUT "$env_file"); fi
+  # shellcheck disable=SC2034
+  if [ -n "${FM_MAIL_ERROR_THRESHOLD+x}" ]; then FMM_ERROR_THRESHOLD=${FM_MAIL_ERROR_THRESHOLD-}; else FMM_ERROR_THRESHOLD=$(fmx_env_get FM_MAIL_ERROR_THRESHOLD "$env_file"); fi
+}
+
+# True when replies default to HTML: on unless FM_MAIL_HTML is 0.
+fmm_html_default() {
+  [ "${FMM_HTML:-}" != 0 ]
 }
 
 # shellcheck disable=SC2034 # FMM_AXI and FMM_AXI_ERROR are read by callers.

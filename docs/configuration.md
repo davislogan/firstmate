@@ -314,7 +314,7 @@ It extracts one nested zip level and skips deeper archives; files are written `0
 
 ### Replies
 
-`bin/fm-mail-reply.sh <req> --body-file <path> [--attach <file>]... [--done]` runs:
+`bin/fm-mail-reply.sh <req> --body-file <path> [--attach <file>]... [--send|--draft] [--html|--text] [--done]` runs:
 
 ```sh
 mail-axi reply-draft <graphId> --mailbox <FM_MAIL_INTAKE> --body-file <path> [--attach <file>]...
@@ -343,7 +343,7 @@ Attachments must resolve inside the request's `out/` folder.
 `--done` then runs `mail-axi move <graphId> --folder done --mailbox <FM_MAIL_INTAKE>`.
 Draft and sent ids are logged to the request's `replies.log`.
 A request that spawns work is linked with `bin/fm-mail-link.sh <task-id> <req>` (`mail_req=` and `mail_req_ts=` in the task meta).
-`bin/fm-mail-followup.sh <task-id> [--final] [--send|--draft] --body-file <path>` drafts (or sends) a follow-up for a linked task; `--final` also moves the message to `done` and clears the link.
+`bin/fm-mail-followup.sh <task-id> [--final] [--send|--draft] [--html|--text] [--attach <file>]... --body-file <path>` drafts (or sends) a follow-up for a linked task; `--final` also moves the message to `done` and clears the link.
 It exits 6 when the draft landed but the move failed, and 7 when the final draft landed but the link could not be cleared; neither should be retried as a new draft.
 
 ## Environment variables

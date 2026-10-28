@@ -317,7 +317,7 @@ It extracts one nested zip level and skips deeper archives; files are written `0
 `bin/fm-mail-reply.sh <req> --body-file <path> [--attach <file>]... [--send|--draft] [--html|--text] [--done]` runs:
 
 ```sh
-mail-axi reply-draft <graphId> --mailbox <FM_MAIL_INTAKE> --body-file <path> [--attach <file>]...
+mail-axi reply-draft <graphId> --mailbox <FM_MAIL_INTAKE> --body-file <path> [--attach <file>]... [--html]
 ```
 
 That creates a threaded reply draft in the intake mailbox's Drafts, and the recipient is always the original verified sender.
@@ -325,7 +325,7 @@ Drafts are the default.
 Real sends are opt-in: set `FM_MAIL_SEND=1` in `.env` (or the environment) and the same helpers run
 
 ```sh
-mail-axi reply-send <graphId> --mailbox <FM_MAIL_INTAKE> --body-file <path> --cc-captain --allow-from <FM_MAIL_CAPTAIN> [--attach <file>]...
+mail-axi reply-send <graphId> --mailbox <FM_MAIL_INTAKE> --body-file <path> --cc-captain --allow-from <FM_MAIL_CAPTAIN> [--attach <file>]... [--html]
 ```
 
 instead, so the reply is sent from the intake mailbox.

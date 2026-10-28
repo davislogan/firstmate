@@ -44,7 +44,7 @@ usage() {
 }
 
 case "${1:-}" in
-  -h|--help) sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 
 MODE=post

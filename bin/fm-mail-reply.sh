@@ -46,7 +46,7 @@ usage() {
 
 REQ=${1:-}
 [ -n "$REQ" ] || { usage; exit 2; }
-case "$REQ" in -h|--help) sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+case "$REQ" in -h|--help) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
 shift
 fmm_safe_slug "$REQ" || { echo "fm-mail-reply: unsafe request id: $REQ" >&2; exit 2; }
 

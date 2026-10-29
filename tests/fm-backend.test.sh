@@ -110,7 +110,7 @@ BASE_REF=$(resolve_base_ref) \
 # tmux-only conformance run the tmux adapter's behavior is what is under test,
 # and that is unchanged by any later (e.g. non-tmux backend) addition to
 # fm-backend.sh's own dispatch surface.
-OLD_BIN_UNCHANGED_SIBLINGS="fm-guard.sh fm-tangle-lib.sh fm-tmux-lib.sh fm-marker-lib.sh fm-wake-lib.sh fm-classify-lib.sh fm-ff-lib.sh fm-config-inherit-lib.sh fm-tasks-axi-lib.sh fm-project-mode.sh fm-harness.sh fm-crew-state.sh fm-backend.sh"
+OLD_BIN_UNCHANGED_SIBLINGS="fm-guard.sh fm-tangle-lib.sh fm-tmux-lib.sh fm-marker-lib.sh fm-wake-lib.sh fm-classify-lib.sh fm-ff-lib.sh fm-config-inherit-lib.sh fm-tasks-axi-lib.sh fm-project-mode.sh fm-harness.sh fm-crew-state.sh fm-backend.sh fm-secondmate-route-lib.sh"
 OLD_BIN_REFACTORED="fm-send.sh fm-peek.sh fm-watch.sh fm-spawn.sh fm-teardown.sh"
 
 build_old_bin() {  # <name> -> echoes root dir (root/bin/<script> is the entry point)
@@ -805,8 +805,11 @@ test_spawn_conformance_old_vs_new() {
   # "command not found". Assert it, then normalize it away for the byte diff.
   assert_contains "$(cat "$log_new")" "=false $fb/claude --dangerously-skip-permissions" \
     "spawn launch did not resolve the harness binary to its absolute path"
+  # Normalize both sides: a baseline that already includes this change also
+  # launches by absolute path.
+  sed "s#=false $fb/claude #=false claude #" "$log_old" > "$log_old.norm"
   sed "s#=false $fb/claude #=false claude #" "$log_new" > "$log_new.norm"
-  diff -u "$log_old" "$log_new.norm" > "$TMP_ROOT/spawn-diff.txt" 2>&1 \
+  diff -u "$log_old.norm" "$log_new.norm" > "$TMP_ROOT/spawn-diff.txt" 2>&1 \
     || fail "fm-spawn.sh: tmux command log differs old vs new"$'\n'"$(cat "$TMP_ROOT/spawn-diff.txt")"
 
   # Sanity: the log actually captured the session/window lifecycle so an

@@ -115,6 +115,9 @@ Then you MUST read the pane and see the `❯` marker on `Yes, I trust this folde
 This check is mandatory, never skipped under time pressure: a `Down` that did not register followed by `Enter` selects `No, exit` and kills the crew, which is the exact failure this section exists to prevent.
 If the marker has not moved, resend `--key Down` and re-read; never send `Enter` on an unverified selection.
 After the `Enter`, verify the brief started processing.
+The Orca backend cannot navigate this dialog: `fm_backend_orca_send_key` in `bin/backends/orca.sh` accepts only `C-c` and `Enter`, so `--key Down` fails with `unsupported Orca key`.
+On an Orca-backed claude spawn, never fall back to a bare `Enter`, because it selects `No, exit` and the agent exits.
+An Orca-backed claude spawn that shows this dialog therefore needs the captain to trust the folder manually in the Orca terminal.
 Verified 2026-10-28, Claude Code 2.1.312, in a never-trusted `git init` directory under `/tmp` launched with plain `claude` in a 120x40 tmux pane:
 the dialog rendered `❯ No, exit` / `  Yes, I trust this folder` / `Enter to confirm · Esc to cancel`;
 a bare `Enter` printed `EXITED rc=1` (the process exited with status 1);
@@ -127,7 +130,8 @@ Its default option is therefore unverified; read the dialog's highlighted option
 **An empty `bin/fm-peek.sh` result is not evidence the pane is empty.**
 Observed 2026-10-28: `bin/fm-peek.sh trusttest3 5` and `bin/fm-peek.sh trusttest3:0 5` returned 0 bytes with exit 0 while `tmux capture-pane -p -t trusttest3` showed 10 plainly visible lines.
 The cause was not isolated.
-When diagnosing a freshly spawned claude pane, fall back to `tmux capture-pane -p -t <target>` before concluding nothing is rendered.
+When diagnosing a freshly spawned claude pane on a tmux-backed task, fall back to `tmux capture-pane -p -t <target>` before concluding nothing is rendered.
+That fallback applies to tmux-backed tasks only; herdr, zellij, orca, and cmux tasks need their own backend's capture command.
 
 Claude renders a predicted-next-prompt suggestion as dim/faint text inside an otherwise-empty composer after a turn completes.
 A plain `tmux capture-pane` cannot tell that ghost text apart from typed text.

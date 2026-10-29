@@ -109,8 +109,12 @@ After every spawn, check the pane within about 20 seconds, and read the whole pa
 **Folder-trust dialog** ("Accessing workspace: ... Is this a project you created or one you trust?").
 The highlighted default is `No, exit`, so a bare Enter declines it and the agent exits at once, before it reads its brief.
 The crew is then dead with no status line, which looks like a silent spawn failure; the cause survives only in pane scrollback.
-Move the selection onto `Yes, I trust this folder` and then submit, as separate keys: `FM_HOME=<this-firstmate-home> bin/fm-send.sh <window> --key Down`, confirm the `❯` marker moved, then `--key Enter`, unless `FM_HOME` is already set to the active firstmate home.
-Retry the pair if the pane still shows the dialog, and verify the brief started processing.
+Move the selection onto `Yes, I trust this folder` and then submit.
+`fm-send --key` takes exactly one key per call, so there is no atomic Down+Enter; send `FM_HOME=<this-firstmate-home> bin/fm-send.sh <window> --key Down`, unless `FM_HOME` is already set to the active firstmate home.
+Then you MUST read the pane and see the `❯` marker on `Yes, I trust this folder` before sending `--key Enter`.
+This check is mandatory, never skipped under time pressure: a `Down` that did not register followed by `Enter` selects `No, exit` and kills the crew, which is the exact failure this section exists to prevent.
+If the marker has not moved, resend `--key Down` and re-read; never send `Enter` on an unverified selection.
+After the `Enter`, verify the brief started processing.
 Verified 2026-10-28, Claude Code 2.1.312, in a never-trusted `git init` directory under `/tmp` launched with plain `claude` in a 120x40 tmux pane:
 the dialog rendered `❯ No, exit` / `  Yes, I trust this folder` / `Enter to confirm · Esc to cancel`;
 a bare `Enter` printed `EXITED rc=1` (the process exited with status 1);
